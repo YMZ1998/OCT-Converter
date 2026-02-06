@@ -7,12 +7,15 @@ import cv2
 import imageio
 import matplotlib.pyplot as plt
 import numpy as np
+import tifffile as tiff
+
+from write_image import cv2_imwrite_safe
 
 VIDEO_TYPES = [
     ".avi",
     ".mp4",
 ]
-IMAGE_TYPES = [".png", ".bmp", ".tiff", ".jpg", ".jpeg"]
+IMAGE_TYPES = [".png", ".bmp", ".jpg", ".jpeg"]
 
 
 class OCTVolumeWithMetaData(object):
@@ -133,9 +136,34 @@ class OCTVolumeWithMetaData(object):
         if extension.lower() in VIDEO_TYPES:
             video_writer = imageio.get_writer(filepath, macro_block_size=None)
             for slice in self.volume:
+                print(slice.min(), slice.max())
+                slice *= 255.0 / slice.max()
                 slice = slice.astype("uint8")
                 video_writer.append_data(slice)
             video_writer.close()
+        elif extension.lower() in {".tif", ".tiff"}:
+
+            pages = []
+
+            for slice in self.volume:
+                print(slice.min(), slice.max())
+
+                slice = slice.astype(np.float32)
+                if slice.max() > 0:
+                    slice = slice * (255.0 / slice.max())
+
+                slice = np.clip(slice, 0, 255).astype(np.uint8)
+
+                pages.append(slice)
+
+            pages = np.stack(pages, axis=0)
+
+            tiff.imwrite(
+                filepath,
+                pages,
+                photometric="minisblack"
+            )
+
         elif extension.lower() in IMAGE_TYPES:
             base = Path(filepath).stem
             print(
@@ -148,7 +176,7 @@ class OCTVolumeWithMetaData(object):
             self.volume *= 255.0 / self.volume.max()
             for index, slice in enumerate(self.volume):
                 filename = "{}_{}{}".format(full_base, index, extension)
-                cv2.imwrite(filename, slice)
+                cv2_imwrite_safe(filename, slice)
         elif extension.lower() == ".npy":
             np.save(filepath, self.volume)
         else:
