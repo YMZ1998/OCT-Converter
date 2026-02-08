@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from write_image import cv2_imwrite_safe
+from oct_converter.image_types.write_image import cv2_imwrite_safe
 
 VIDEO_TYPES = [
     ".avi",
@@ -54,10 +54,12 @@ class FundusImageWithMetaData(object):
             filepath: location to save volume to. Extension must be in IMAGE_TYPES.
         """
         extension = Path(filepath).suffix
+        print(self.image.shape)
         if extension.lower() in IMAGE_TYPES:
             # change channel order from RGB to BGR and save with cv2
             image = cv2.cvtColor(self.image, cv2.COLOR_RGB2BGR)
             cv2_imwrite_safe(filepath, image)
+            # cv2.imwrite(filepath, image)
         elif extension.lower() == ".npy":
             np.save(filepath, self.image)
         else:

@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tifffile as tiff
 
-from write_image import cv2_imwrite_safe
+from oct_converter.image_types.write_image import cv2_imwrite_safe
 
 VIDEO_TYPES = [
     ".avi",
@@ -136,8 +136,8 @@ class OCTVolumeWithMetaData(object):
         if extension.lower() in VIDEO_TYPES:
             video_writer = imageio.get_writer(filepath, macro_block_size=None)
             for slice in self.volume:
-                print(slice.min(), slice.max())
-                slice *= 255.0 / slice.max()
+                # print(slice.min(), slice.max())
+                # slice *= 255.0 / slice.max()
                 slice = slice.astype("uint8")
                 video_writer.append_data(slice)
             video_writer.close()
@@ -146,8 +146,7 @@ class OCTVolumeWithMetaData(object):
             pages = []
 
             for slice in self.volume:
-                print(slice.min(), slice.max())
-
+                # print(slice.min(), slice.max())
                 slice = slice.astype(np.float32)
                 if slice.max() > 0:
                     slice = slice * (255.0 / slice.max())
