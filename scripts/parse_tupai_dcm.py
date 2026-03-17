@@ -5,7 +5,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pydicom
 
-input_dir = r'E:\Data\OCT2\视微OCT\00402_20260224001_D-120001DME_OD_2026-02-11_10-11-16Cube 6x6 512x512\Dicom'
+# input_dir = r'E:\Data\OCT2\图湃OCT\KH902-R10 R-096016RVO_男_26_R-096016RVO\20260303_102557_右眼_12.00mmX12.00mm_3D黄斑'
+input_dir = r'E:\Data\OCT2\图湃OCT\KH902-R10-D-114001DME_男_26_D-114001DME\20260127_115627_左眼_12.00mmX12.00mm_3D黄斑'
 reader = sitk.ImageSeriesReader()
 series_ids = reader.GetGDCMSeriesIDs(input_dir)
 print(series_ids)
@@ -14,15 +15,14 @@ if not series_ids:
 
 print(f"📦 找到 {len(series_ids)} 个 DICOM series.")
 
-# ds = pydicom.dcmread(os.path.join(input_dir,'D-120001DME_OD_2026-02-11_10-11-16_RotatedStructural_csso.dcm'))
-ds = pydicom.dcmread(os.path.join(input_dir,'D-120001DME_OD_2026-02-11_10-11-16_RotatedStructural_structural.dcm'))
-# ds = pydicom.dcmread(os.path.join(input_dir, 'D-120001DME_OD_2026-02-11_10-11-16_Structural.dcm'))
-# ds = pydicom.dcmread(os.path.join(input_dir, 'D-120001DME_OD_2026-02-11_10-11-16_Segmentation.dcm'))
-print(ds)
+ds = pydicom.dcmread(os.path.join(input_dir, 'OCT.dcm'))
+# ds = pydicom.dcmread(os.path.join(input_dir,'Enface.dcm'))
+# ds = pydicom.dcmread(os.path.join(input_dir, 'Fundus.dcm'))
+# print(ds)
 print(ds.SamplesPerPixel)
 print(ds.PhotometricInterpretation)
 print(ds.PatientName)
-# print(ds.PixelSpacing)
+print(ds.PixelSpacing)
 if hasattr(ds, 'PerFrameFunctionalGroupsSequence'):
     for f in ds.PerFrameFunctionalGroupsSequence:
         if hasattr(f, 'OphthalmicFrameLocationSequence'):
@@ -35,11 +35,9 @@ if hasattr(ds, 'PerFrameFunctionalGroupsSequence'):
 
 img = ds.pixel_array
 print(img.shape, img.dtype)
-if(len(img.shape)>2):
+if (len(img.shape) > 2):
     plt.imshow(img[:, :, 0], cmap="gray")
 else:
     plt.imshow(img, cmap="gray")
 plt.axis("off")
 plt.show()
-
-
