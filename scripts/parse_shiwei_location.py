@@ -83,6 +83,22 @@ def parse_args():
         help="Frames per second for GIF export.",
     )
     parser.add_argument(
+        "--seg-candidate-index",
+        type=int,
+        default=0,
+        help="Segmentation candidate index to use manually. Default: 0.",
+    )
+    parser.add_argument(
+        "--seg-flip-x",
+        action="store_true",
+        help="Flip segmentation curves horizontally.",
+    )
+    parser.add_argument(
+        "--seg-flip-y",
+        action="store_true",
+        help="Flip segmentation curves vertically.",
+    )
+    parser.add_argument(
         "--no-show",
         action="store_true",
         help="Skip the interactive Matplotlib viewer.",
@@ -282,8 +298,6 @@ def get_segmentation_curves(segmentation_surfaces, slice_idx, target_width, orie
         return []
 
     actual_slice_idx = slice_idx
-    if orientation is not None and orientation.get("reverse_slices"):
-        actual_slice_idx = segmentation_surfaces.shape[1] - 1 - slice_idx
 
     source_width = segmentation_surfaces.shape[2]
     x_source = np.arange(source_width, dtype=float)
@@ -337,43 +351,50 @@ def resolve_segmentation_orientation(volume, segmentation_candidates):
     best_orientation = None
 
     for candidate in segmentation_candidates:
-        for reverse_slices in (False, True):
-            for flip_x in (False, True):
-                for flip_y in (False, True):
-                    orientation = {
-                        "reverse_slices": reverse_slices,
-                        "flip_x": True,
-                        "flip_y": True,
-                        "bscan_height": volume.shape[1],
-                    }
-                    score = 0.0
-                    valid_samples = 0
+        for flip_x in (False, True):
+            for flip_y in (False, True):
+                orientation = {
+                    "reverse_slices": False,
+                    "flip_x": flip_x,
+                    "flip_y": flip_y,
+                    "bscan_height": volume.shape[1],
+                }
+                score = 0.0
+                valid_samples = 0
 
-                    for slice_idx in sample_slices:
-                        curves = get_segmentation_curves(
-                            candidate,
-                            slice_idx,
-                            volume[slice_idx].shape[1],
-                            orientation=orientation,
-                        )
-                        curve_score = sample_curve_alignment_score(volume[slice_idx], curves)
-                        if np.isfinite(curve_score):
-                            score += curve_score
-                            valid_samples += 1
+                for slice_idx in sample_slices:
+                    curves = get_segmentation_curves(
+                        candidate,
+                        slice_idx,
+                        volume[slice_idx].shape[1],
+                        orientation=orientation,
+                    )
+                    curve_score = sample_curve_alignment_score(volume[slice_idx], curves)
+                    if np.isfinite(curve_score):
+                        score += curve_score
+                        valid_samples += 1
 
-                    if valid_samples == 0:
-                        continue
+                if valid_samples == 0:
+                    continue
 
-                    score /= valid_samples
-                    if score > best_score:
-                        best_score = score
-                        best_surfaces = candidate
-                        best_orientation = orientation
+                score /= valid_samples
+                if score > best_score:
+                    best_score = score
+                    best_surfaces = candidate
+                    best_orientation = orientation
 
     return best_surfaces, best_orientation
 
 
-def load_shiwei_data(input_dir, bscan_file=None, fundus_file=None, seg_file=None):
+def load_shiwei_data(
+    input_dir,
+    bscan_file=None,
+    fundus_file=None,
+    seg_file=None,
+    seg_candidate_index=0,
+    seg_flip_x=False,
+    seg_flip_y=False,
+):
     bscan_file, fundus_file, seg_file = resolve_input_files(
         input_dir, bscan_file, fundus_file, seg_file
     )
@@ -408,14 +429,22 @@ def load_shiwei_data(input_dir, bscan_file=None, fundus_file=None, seg_file=None
         num_slices=num_slices,
         bscan_height=volume.shape[1],
     )
-    segmentation_surfaces, segmentation_orientation = resolve_segmentation_orientation(
-        volume=volume,
-        segmentation_candidates=segmentation_candidates,
-    )
-    if segmentation_orientation is not None:
-        segmentation_orientation = dict(segmentation_orientation)
-        segmentation_orientation['flip_x'] = not segmentation_orientation.get('flip_x', False)
-        segmentation_orientation['flip_y'] = not segmentation_orientation.get('flip_y', False)
+    segmentation_surfaces = None
+    segmentation_orientation = None
+    if segmentation_candidates:
+        candidate_count = len(segmentation_candidates)
+        if not 0 <= seg_candidate_index < candidate_count:
+            raise ValueError(
+                f"Invalid --seg-candidate-index={seg_candidate_index}. "
+                f"Available candidates: 0 to {candidate_count - 1}."
+            )
+        segmentation_surfaces = segmentation_candidates[seg_candidate_index]
+        segmentation_orientation = {
+            "reverse_slices": False,
+            "flip_x": False,
+            "flip_y": False,
+            "bscan_height": volume.shape[1],
+        }
 
     return (
         volume,
@@ -659,9 +688,21 @@ def main():
         bscan_file=args.bscan_file,
         fundus_file=args.fundus_file,
         seg_file=args.seg_file,
+        seg_candidate_index=args.seg_candidate_index,
+        seg_flip_x=args.seg_flip_x,
+        seg_flip_y=args.seg_flip_y,
     )
 
     basename = args.basename or Path(bscan_file).stem
+
+    if segmentation_surfaces is not None and segmentation_orientation is not None:
+        print(
+            "[INFO] Manual segmentation config:",
+            f"candidate={args.seg_candidate_index},",
+            f"flip_x={segmentation_orientation['flip_x']},",
+            f"flip_y={segmentation_orientation['flip_y']},",
+            f"reverse_slices={segmentation_orientation['reverse_slices']}",
+        )
 
     if formats:
         output_dir = args.output_dir or os.path.join(args.input_dir, "exports")
