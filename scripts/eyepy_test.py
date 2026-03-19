@@ -4,8 +4,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # 导入 OCT 数据
-# ev = ep.import_heyex_e2e(r"E:\Data\OCT\海德堡\海德堡OCT.E2E")
-ev = ep.import_topcon_fda(r"E:\Data\OCT\拓普康OCT\41368.fda")
+# ev = ep.import_heyex_e2e(r"E:\Data\OCT\海德堡\海德堡FA.E2E")
+ev = ep.import_heyex_e2e(r"E:\Data\OCT\海德堡\海德堡OCT.E2E")
+# ev = ep.import_topcon_fda(r"E:\Data\OCT\拓普康OCT\41368.fda")
 
 fundus = ev.localizer.data
 
