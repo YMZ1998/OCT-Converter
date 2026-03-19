@@ -11,7 +11,7 @@ from matplotlib.widgets import Slider
 
 
 DEFAULT_INPUT_DIR = (
-    "E:\\Data\\OCT2\\视微OCT\\00538_20260228005_A-031001AMD_OS_2026-03-06_11-47-06Cube 6x6 512x512\\Dicom"
+    "E:\\Data\\OCT2\\视微OCT\\00402_20260224001_D-120001DME_OD_2026-02-11_10-11-16Cube 6x6 512x512\\Dicom"
 )
 
 FORMAT_ALIASES = {
@@ -81,22 +81,6 @@ def parse_args():
         type=float,
         default=6.0,
         help="Frames per second for GIF export.",
-    )
-    parser.add_argument(
-        "--seg-candidate-index",
-        type=int,
-        default=0,
-        help="Segmentation candidate index to use manually. Default: 0.",
-    )
-    parser.add_argument(
-        "--seg-flip-x",
-        action="store_true",
-        help="Flip segmentation curves horizontally.",
-    )
-    parser.add_argument(
-        "--seg-flip-y",
-        action="store_true",
-        help="Flip segmentation curves vertically.",
     )
     parser.add_argument(
         "--no-show",
@@ -263,127 +247,107 @@ def parse_segmentation_surfaces(seg_file, num_slices, bscan_height):
     if seg_array.ndim != 3:
         return None
 
-    candidates = []
-    if seg_array.shape[1] == num_slices:
-        candidates.append(seg_array)
-    if seg_array.shape[2] == num_slices:
-        candidates.append(np.transpose(seg_array, (0, 2, 1)))
-    if not candidates and seg_array.shape[0] == num_slices:
-        candidates.append(np.transpose(seg_array, (1, 0, 2)))
+    valid_mask = (seg_array >= 0.0) & (seg_array <= bscan_height - 1)
+    seg_array = np.where(valid_mask, seg_array, np.nan)
 
-    processed_candidates = []
-    for candidate in candidates:
-        valid_mask = (candidate >= 0.0) & (candidate <= bscan_height - 1)
-        candidate = np.where(valid_mask, candidate, np.nan)
+    valid_layers = []
+    for layer in seg_array:
+        finite_ratio = np.isfinite(layer).sum() / layer.size
+        if finite_ratio < 0.95:
+            continue
+        if np.nanmax(layer) - np.nanmin(layer) < 1e-3:
+            continue
+        is_duplicate = False
+        for existing in valid_layers:
+            mean_abs_diff = float(np.nanmean(np.abs(layer - existing)))
+            if mean_abs_diff < 1e-3:
+                is_duplicate = True
+                break
+        if is_duplicate:
+            continue
+        valid_layers.append(layer)
 
-        valid_layers = []
-        for layer in candidate:
-            if np.isfinite(layer).sum() < num_slices:
-                continue
-            if np.nanmax(layer) - np.nanmin(layer) < 1e-3:
-                continue
-            valid_layers.append(layer)
-
-        if valid_layers:
-            processed_candidates.append(np.stack(valid_layers, axis=0))
-
-    if not processed_candidates:
+    if not valid_layers:
         return None
 
-    return processed_candidates
+    valid_layers.sort(key=lambda layer: float(np.nanmean(layer)))
+    return np.stack(valid_layers, axis=0)
 
 
-def get_segmentation_curves(segmentation_surfaces, slice_idx, target_width, orientation=None):
+def bilinear_sample(image, x_coords, y_coords):
+    height, width = image.shape
+    x_coords = np.clip(np.asarray(x_coords, dtype=float), 0.0, width - 1.0)
+    y_coords = np.clip(np.asarray(y_coords, dtype=float), 0.0, height - 1.0)
+
+    x0 = np.floor(x_coords).astype(int)
+    x1 = np.clip(x0 + 1, 0, width - 1)
+    y0 = np.floor(y_coords).astype(int)
+    y1 = np.clip(y0 + 1, 0, height - 1)
+
+    wx = x_coords - x0
+    wy = y_coords - y0
+
+    return (
+        (1.0 - wx) * (1.0 - wy) * image[y0, x0]
+        + wx * (1.0 - wy) * image[y0, x1]
+        + (1.0 - wx) * wy * image[y1, x0]
+        + wx * wy * image[y1, x1]
+    )
+
+
+def get_coordinate_bounds(coordinates):
+    if not coordinates:
+        return None
+
+    coordinates = np.asarray(coordinates, dtype=float)
+    x_min = float(np.nanmin(coordinates[:, [0, 2]]))
+    x_max = float(np.nanmax(coordinates[:, [0, 2]]))
+    y_min = float(np.nanmin(coordinates[:, [1, 3]]))
+    y_max = float(np.nanmax(coordinates[:, [1, 3]]))
+    return x_min, x_max, y_min, y_max
+
+
+def get_segmentation_curves(
+    segmentation_surfaces,
+    coordinates,
+    slice_idx,
+    target_width,
+    orientation=None,
+):
     if segmentation_surfaces is None:
         return []
 
-    actual_slice_idx = slice_idx
+    bounds = None if orientation is None else orientation.get("coordinate_bounds")
+    if bounds is None:
+        bounds = get_coordinate_bounds(coordinates)
+    if bounds is None:
+        return []
 
-    source_width = segmentation_surfaces.shape[2]
-    x_source = np.arange(source_width, dtype=float)
-    x_target = np.linspace(0, target_width - 1, target_width, dtype=float)
+    x_min, x_max, y_min, y_max = bounds
+    if x_max <= x_min or y_max <= y_min:
+        return []
+
+    line_coords = np.asarray(coordinates[slice_idx], dtype=float)
+    seg_height, seg_width = segmentation_surfaces.shape[1:]
+
+    x0 = (line_coords[0] - x_min) * (seg_width - 1) / (x_max - x_min)
+    y0 = (line_coords[1] - y_min) * (seg_height - 1) / (y_max - y_min)
+    x1 = (line_coords[2] - x_min) * (seg_width - 1) / (x_max - x_min)
+    y1 = (line_coords[3] - y_min) * (seg_height - 1) / (y_max - y_min)
+
+    x_line = np.linspace(x0, x1, target_width, dtype=float)
+    y_line = np.linspace(y0, y1, target_width, dtype=float)
     curves = []
 
     for layer in segmentation_surfaces:
-        curve = np.asarray(layer[actual_slice_idx], dtype=float)
+        curve = bilinear_sample(layer, x_line, y_line)
         valid = np.isfinite(curve)
         if np.count_nonzero(valid) < 2:
             continue
-        curve_interp = np.interp(x_target, x_source[valid], curve[valid])
-        if orientation is not None and orientation.get("flip_x"):
-            curve_interp = curve_interp[::-1]
-        if orientation is not None and orientation.get("flip_y"):
-            curve_interp = orientation["bscan_height"] - 1 - curve_interp
+        curve_interp = curve.copy()
         curves.append(curve_interp)
 
     return curves
-
-
-def sample_curve_alignment_score(bscan_slice, curves):
-    if not curves:
-        return float("-inf")
-
-    image = normalize_to_uint8(bscan_slice).astype(np.float32)
-    gradient = np.abs(np.gradient(image, axis=0))
-    score = 0.0
-    count = 0
-
-    for curve in curves:
-        x_coords = np.arange(len(curve), dtype=int)
-        y_coords = np.clip(np.round(curve).astype(int), 1, gradient.shape[0] - 2)
-        score += float(np.mean(gradient[y_coords, x_coords]))
-        count += 1
-
-    if count == 0:
-        return float("-inf")
-    return score / count
-
-
-def resolve_segmentation_orientation(volume, segmentation_candidates):
-    if not segmentation_candidates:
-        return None, None
-
-    sample_slices = sorted(
-        {0, len(volume) // 4, len(volume) // 2, (3 * len(volume)) // 4, len(volume) - 1}
-    )
-    best_score = float("-inf")
-    best_surfaces = None
-    best_orientation = None
-
-    for candidate in segmentation_candidates:
-        for flip_x in (False, True):
-            for flip_y in (False, True):
-                orientation = {
-                    "reverse_slices": False,
-                    "flip_x": flip_x,
-                    "flip_y": flip_y,
-                    "bscan_height": volume.shape[1],
-                }
-                score = 0.0
-                valid_samples = 0
-
-                for slice_idx in sample_slices:
-                    curves = get_segmentation_curves(
-                        candidate,
-                        slice_idx,
-                        volume[slice_idx].shape[1],
-                        orientation=orientation,
-                    )
-                    curve_score = sample_curve_alignment_score(volume[slice_idx], curves)
-                    if np.isfinite(curve_score):
-                        score += curve_score
-                        valid_samples += 1
-
-                if valid_samples == 0:
-                    continue
-
-                score /= valid_samples
-                if score > best_score:
-                    best_score = score
-                    best_surfaces = candidate
-                    best_orientation = orientation
-
-    return best_surfaces, best_orientation
 
 
 def load_shiwei_data(
@@ -391,9 +355,6 @@ def load_shiwei_data(
     bscan_file=None,
     fundus_file=None,
     seg_file=None,
-    seg_candidate_index=0,
-    seg_flip_x=False,
-    seg_flip_y=False,
 ):
     bscan_file, fundus_file, seg_file = resolve_input_files(
         input_dir, bscan_file, fundus_file, seg_file
@@ -424,26 +385,17 @@ def load_shiwei_data(
         coordinates = [np.array([0, 0, 0, 0], dtype=float) for _ in range(num_slices)]
         angles = [0.0] * num_slices
 
-    segmentation_candidates = parse_segmentation_surfaces(
+    segmentation_surfaces=None
+    segmentation_surfaces = parse_segmentation_surfaces(
         seg_file=seg_file,
         num_slices=num_slices,
         bscan_height=volume.shape[1],
     )
-    segmentation_surfaces = None
+
     segmentation_orientation = None
-    if segmentation_candidates:
-        candidate_count = len(segmentation_candidates)
-        if not 0 <= seg_candidate_index < candidate_count:
-            raise ValueError(
-                f"Invalid --seg-candidate-index={seg_candidate_index}. "
-                f"Available candidates: 0 to {candidate_count - 1}."
-            )
-        segmentation_surfaces = segmentation_candidates[seg_candidate_index]
+    if segmentation_surfaces is not None:
         segmentation_orientation = {
-            "reverse_slices": False,
-            "flip_x": False,
-            "flip_y": False,
-            "bscan_height": volume.shape[1],
+            "coordinate_bounds": get_coordinate_bounds(coordinates),
         }
 
     return (
@@ -508,6 +460,7 @@ def export_visualization(
         for index, bscan_slice in enumerate(volume):
             curves = get_segmentation_curves(
                 segmentation_surfaces,
+                coordinates,
                 index,
                 bscan_slice.shape[1],
                 orientation=segmentation_orientation,
@@ -603,6 +556,7 @@ def show_interactive_viewer(
 
     initial_curves = get_segmentation_curves(
         segmentation_surfaces,
+        coordinates,
         slice_idx,
         volume[slice_idx].shape[1],
         orientation=segmentation_orientation,
@@ -640,6 +594,7 @@ def show_interactive_viewer(
 
         curves = get_segmentation_curves(
             segmentation_surfaces,
+            coordinates,
             index,
             volume[index].shape[1],
             orientation=segmentation_orientation,
@@ -688,21 +643,9 @@ def main():
         bscan_file=args.bscan_file,
         fundus_file=args.fundus_file,
         seg_file=args.seg_file,
-        seg_candidate_index=args.seg_candidate_index,
-        seg_flip_x=args.seg_flip_x,
-        seg_flip_y=args.seg_flip_y,
     )
 
     basename = args.basename or Path(bscan_file).stem
-
-    if segmentation_surfaces is not None and segmentation_orientation is not None:
-        print(
-            "[INFO] Manual segmentation config:",
-            f"candidate={args.seg_candidate_index},",
-            f"flip_x={segmentation_orientation['flip_x']},",
-            f"flip_y={segmentation_orientation['flip_y']},",
-            f"reverse_slices={segmentation_orientation['reverse_slices']}",
-        )
 
     if formats:
         output_dir = args.output_dir or os.path.join(args.input_dir, "exports")

@@ -5,7 +5,7 @@ from oct_converter.readers import E2E
 from scripts.dir_process import remove_and_create_dir
 
 
-def test(filepath):
+def run(filepath):
     # ================= 结果根目录 =================
     result_root = r"E:\\Data\\OCT\\Result"
 
@@ -73,5 +73,5 @@ if __name__ == "__main__":
     # ================= 输入文件 =================
     filepath1 = r"E:\Data\OCT\海德堡\海德堡FA.E2E"
     filepath2 = r"E:\Data\OCT\海德堡\海德堡OCT.E2E"
-    test(filepath1)
-    test(filepath2)
+    run(filepath1)
+    run(filepath2)

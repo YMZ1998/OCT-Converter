@@ -17,7 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QSettings, Qt
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
@@ -388,6 +388,7 @@ class OCTViewerWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("OCT E2E/FDA Qt Viewer")
         self.resize(1360, 860)
+        self.settings = QSettings("OpenAI", "OCTE2EFDAViewer")
 
         self.filepath = None
         self.models = []
@@ -424,6 +425,28 @@ class OCTViewerWindow(QMainWindow):
         self._build_toolbar()
         self._build_layout()
         self._set_empty_state()
+
+    def get_last_open_dir(self):
+        last_file = self.settings.value("last_file", "", type=str)
+        if last_file and Path(last_file).exists():
+            return str(Path(last_file).parent)
+
+        last_dir = self.settings.value("last_dir", "", type=str)
+        if last_dir and Path(last_dir).exists():
+            return last_dir
+
+        return ""
+
+    def get_last_file(self):
+        last_file = self.settings.value("last_file", "", type=str)
+        if last_file and Path(last_file).exists():
+            return last_file
+        return None
+
+    def remember_file(self, filepath):
+        filepath = str(Path(filepath).resolve())
+        self.settings.setValue("last_file", filepath)
+        self.settings.setValue("last_dir", str(Path(filepath).parent))
 
     def _build_toolbar(self):
         toolbar = QToolBar("Main")
@@ -487,7 +510,7 @@ class OCTViewerWindow(QMainWindow):
         filename, _ = QFileDialog.getOpenFileName(
             self,
             "选择 E2E/FDA 文件",
-            "",
+            self.get_last_open_dir(),
             "OCT Files (*.E2E *.e2e *.FDA *.fda)",
         )
         if filename:
@@ -504,6 +527,7 @@ class OCTViewerWindow(QMainWindow):
         self.models = models
         self.current_volume_index = 0
         self.current_slice_index = 0
+        self.remember_file(filepath)
 
         self.file_label.setText(self.filepath)
         self.volume_combo.blockSignals(True)
