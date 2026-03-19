@@ -274,39 +274,6 @@ def parse_segmentation_surfaces(seg_file, num_slices, bscan_height):
     return np.stack(valid_layers, axis=0)
 
 
-def bilinear_sample(image, x_coords, y_coords):
-    height, width = image.shape
-    x_coords = np.clip(np.asarray(x_coords, dtype=float), 0.0, width - 1.0)
-    y_coords = np.clip(np.asarray(y_coords, dtype=float), 0.0, height - 1.0)
-
-    x0 = np.floor(x_coords).astype(int)
-    x1 = np.clip(x0 + 1, 0, width - 1)
-    y0 = np.floor(y_coords).astype(int)
-    y1 = np.clip(y0 + 1, 0, height - 1)
-
-    wx = x_coords - x0
-    wy = y_coords - y0
-
-    return (
-        (1.0 - wx) * (1.0 - wy) * image[y0, x0]
-        + wx * (1.0 - wy) * image[y0, x1]
-        + (1.0 - wx) * wy * image[y1, x0]
-        + wx * wy * image[y1, x1]
-    )
-
-
-def get_coordinate_bounds(coordinates):
-    if not coordinates:
-        return None
-
-    coordinates = np.asarray(coordinates, dtype=float)
-    x_min = float(np.nanmin(coordinates[:, [0, 2]]))
-    x_max = float(np.nanmax(coordinates[:, [0, 2]]))
-    y_min = float(np.nanmin(coordinates[:, [1, 3]]))
-    y_max = float(np.nanmax(coordinates[:, [1, 3]]))
-    return x_min, x_max, y_min, y_max
-
-
 def get_segmentation_curves(
     segmentation_surfaces,
     coordinates,
@@ -317,34 +284,17 @@ def get_segmentation_curves(
     if segmentation_surfaces is None:
         return []
 
-    bounds = None if orientation is None else orientation.get("coordinate_bounds")
-    if bounds is None:
-        bounds = get_coordinate_bounds(coordinates)
-    if bounds is None:
-        return []
-
-    x_min, x_max, y_min, y_max = bounds
-    if x_max <= x_min or y_max <= y_min:
-        return []
-
-    line_coords = np.asarray(coordinates[slice_idx], dtype=float)
-    seg_height, seg_width = segmentation_surfaces.shape[1:]
-
-    x0 = (line_coords[0] - x_min) * (seg_width - 1) / (x_max - x_min)
-    y0 = (line_coords[1] - y_min) * (seg_height - 1) / (y_max - y_min)
-    x1 = (line_coords[2] - x_min) * (seg_width - 1) / (x_max - x_min)
-    y1 = (line_coords[3] - y_min) * (seg_height - 1) / (y_max - y_min)
-
-    x_line = np.linspace(x0, x1, target_width, dtype=float)
-    y_line = np.linspace(y0, y1, target_width, dtype=float)
+    slice_idx = int(np.clip(slice_idx, 0, segmentation_surfaces.shape[1] - 1))
+    x_source = np.arange(segmentation_surfaces.shape[2], dtype=float)
+    x_target = np.linspace(0, segmentation_surfaces.shape[2] - 1, target_width, dtype=float)
     curves = []
 
     for layer in segmentation_surfaces:
-        curve = bilinear_sample(layer, x_line, y_line)
+        curve = np.asarray(layer[slice_idx], dtype=float)
         valid = np.isfinite(curve)
         if np.count_nonzero(valid) < 2:
             continue
-        curve_interp = curve.copy()
+        curve_interp = np.interp(x_target, x_source[valid], curve[valid])
         curves.append(curve_interp)
 
     return curves
@@ -385,7 +335,6 @@ def load_shiwei_data(
         coordinates = [np.array([0, 0, 0, 0], dtype=float) for _ in range(num_slices)]
         angles = [0.0] * num_slices
 
-    segmentation_surfaces=None
     segmentation_surfaces = parse_segmentation_surfaces(
         seg_file=seg_file,
         num_slices=num_slices,
@@ -393,10 +342,6 @@ def load_shiwei_data(
     )
 
     segmentation_orientation = None
-    if segmentation_surfaces is not None:
-        segmentation_orientation = {
-            "coordinate_bounds": get_coordinate_bounds(coordinates),
-        }
 
     return (
         volume,

@@ -275,6 +275,28 @@ def format_metadata_text(path, volume, source_kind, fundus_shape, segment_mode):
     return json.dumps(summary, indent=2, ensure_ascii=False, default=str)
 
 
+def select_matching_fundus(volume, fundus_images, index):
+    if not fundus_images:
+        return None, "projection-fallback"
+
+    fundus_by_id = {
+        getattr(image, "image_id", None): image
+        for image in fundus_images
+        if getattr(image, "image_id", None)
+    }
+    if volume.volume_id in fundus_by_id:
+        return fundus_by_id[volume.volume_id], "matched-by-id"
+
+    if volume.laterality:
+        same_laterality = [
+            image for image in fundus_images if getattr(image, "laterality", None) == volume.laterality
+        ]
+        if len(same_laterality) == 1:
+            return same_laterality[0], "matched-by-laterality"
+
+    return fundus_images[min(index, len(fundus_images) - 1)], "matched-by-index-fallback"
+
+
 def load_e2e_file(filepath):
     from oct_converter.readers.e2e import E2E
 
@@ -292,19 +314,21 @@ def load_e2e_file(filepath):
 
     models = []
     for index, volume in enumerate(volumes):
-        if fundus_images:
-            fundus = fundus_images[min(index, len(fundus_images) - 1)].image
+        matched_fundus, fundus_match_mode = select_matching_fundus(volume, fundus_images, index)
+        if matched_fundus is not None:
+            fundus = matched_fundus.image
         else:
             fundus = make_projection_fundus(volume.volume)
+            fundus_match_mode = "projection-fallback"
 
         group = bscan_groups[index] if index < len(bscan_groups) else []
         localizer_entry = localizers[min(index, len(localizers) - 1)] if localizers else None
         if group:
             scan_segments = project_e2e_segments(group, localizer_entry, fundus.shape)
-            segment_mode = "e2e-metadata"
+            segment_mode = f"e2e-metadata/{fundus_match_mode}"
         else:
             scan_segments = build_parallel_segments(volume.num_slices, fundus.shape)
-            segment_mode = "fallback-parallel"
+            segment_mode = f"fallback-parallel/{fundus_match_mode}"
 
         label = volume.volume_id or f"E2E Volume {index + 1}"
         if volume.laterality:
