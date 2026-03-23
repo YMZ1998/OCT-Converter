@@ -229,7 +229,7 @@ def draw_line_rgb(image, start, end, color=(255, 0, 0), thickness=2):
         image[y_min:y_max, x_min:x_max] = color
 
 
-def parse_segmentation_surfaces(seg_file, num_slices, bscan_height):
+def parse_segmentation_surfaces(seg_file, num_slices, source_depth_limit):
     if seg_file is None or not os.path.exists(seg_file):
         return None
 
@@ -247,7 +247,7 @@ def parse_segmentation_surfaces(seg_file, num_slices, bscan_height):
     if seg_array.ndim != 3:
         return None
 
-    valid_mask = (seg_array >= 0.0) & (seg_array <= bscan_height - 1)
+    valid_mask = (seg_array >= 0.0) & (seg_array <= source_depth_limit - 1)
     seg_array = np.where(valid_mask, seg_array, np.nan)
 
     valid_layers = []
@@ -295,6 +295,10 @@ def get_segmentation_curves(
         if np.count_nonzero(valid) < 2:
             continue
         curve_interp = np.interp(x_target, x_source[valid], curve[valid])
+        if orientation is not None and "vertical_scale" in orientation:
+            curve_interp = curve_interp * float(orientation["vertical_scale"])
+        if orientation is not None and "vertical_offset" in orientation:
+            curve_interp = curve_interp + float(orientation["vertical_offset"])
         curves.append(curve_interp)
 
     return curves
@@ -335,13 +339,37 @@ def load_shiwei_data(
         coordinates = [np.array([0, 0, 0, 0], dtype=float) for _ in range(num_slices)]
         angles = [0.0] * num_slices
 
-    segmentation_surfaces = parse_segmentation_surfaces(
-        seg_file=seg_file,
-        num_slices=num_slices,
-        bscan_height=volume.shape[1],
-    )
-
+    segmentation_surfaces = None
     segmentation_orientation = None
+    if seg_file is not None and os.path.exists(seg_file):
+        ds_seg = pydicom.dcmread(seg_file, stop_before_pixels=True)
+
+        bscan_shared = getattr(ds_bscan, "SharedFunctionalGroupsSequence", None)
+        seg_shared = getattr(ds_seg, "SharedFunctionalGroupsSequence", None)
+
+        bscan_row_spacing = None
+        seg_depth_spacing = None
+        if bscan_shared and hasattr(bscan_shared[0], "PixelMeasuresSequence"):
+            bscan_row_spacing = float(bscan_shared[0].PixelMeasuresSequence[0].PixelSpacing[0])
+        if seg_shared and hasattr(seg_shared[0], "PixelMeasuresSequence"):
+            seg_depth_spacing = float(seg_shared[0].PixelMeasuresSequence[0].PixelSpacing[1])
+
+        if bscan_row_spacing and seg_depth_spacing:
+            source_depth_limit = int(round(volume.shape[1] * bscan_row_spacing / seg_depth_spacing))
+            vertical_scale = seg_depth_spacing / bscan_row_spacing
+        else:
+            source_depth_limit = volume.shape[1]
+            vertical_scale = 1.0
+
+        segmentation_surfaces = parse_segmentation_surfaces(
+            seg_file=seg_file,
+            num_slices=num_slices,
+            source_depth_limit=source_depth_limit,
+        )
+        segmentation_orientation = {
+            "vertical_scale": vertical_scale,
+            "vertical_offset": 0.0,
+        }
 
     return (
         volume,

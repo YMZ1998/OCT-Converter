@@ -15,6 +15,8 @@ import numpy as np
 import pydicom
 
 matplotlib.use("Qt5Agg")
+matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans"]
+matplotlib.rcParams["axes.unicode_minus"] = False
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -24,12 +26,16 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from PyQt5.QtCore import QSettings, Qt
+from PyQt5.QtGui import QFont, QKeySequence
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -39,12 +45,31 @@ from PyQt5.QtWidgets import (
     QSlider,
     QSpinBox,
     QSplitter,
+    QStatusBar,
+    QShortcut,
     QToolBar,
     QVBoxLayout,
     QWidget,
 )
 
 from scripts.zeiss_dicom import ZEISSDicom
+
+OPHTHALMIC_PHOTOGRAPHY_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.77.1.5.1"
+
+FUNDUS_SOURCE_PRIORITY = {
+    "fundus_photo": 0,
+    "enface": 1,
+    "fundus": 1,
+    "multiframe_localizer": 2,
+}
+
+FUNDUS_SOURCE_LABELS = {
+    "fundus_photo": "眼底照片",
+    "enface": "OCT 眼底投影",
+    "fundus": "眼底图",
+    "multiframe_localizer": "定位图",
+    "projection-fallback": "体数据投影（回退）",
+}
 
 
 @dataclass
@@ -56,6 +81,10 @@ class FundusCandidate:
     width: int
     height: int
     score: float
+    physical_width_mm: float | None
+    physical_height_mm: float | None
+    frame_of_reference_uid: str
+    series_instance_uid: str
 
 
 @dataclass
@@ -68,8 +97,11 @@ class VolumeViewModel:
     fundus: np.ndarray
     scan_segments: list
     overlay_bounds: tuple[float, float, float, float] | None
+    overlay_outline: list[tuple[float, float]] | None
     overlay_spokes: list
     metadata_text: str
+    fundus_source_file: str
+    fundus_source_kind: str
 
 
 @dataclass
@@ -83,12 +115,12 @@ class ExamViewModel:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Qt viewer for Zeiss OCT DICOM exports.",
+        description="蔡司 OCT DICOM 导出数据查看器。",
     )
     parser.add_argument(
         "path",
         nargs="?",
-        help="Optional Zeiss export root / exam folder / DCM / DICOMDIR path.",
+        help="可选：蔡司导出根目录、exam 目录、DCM 文件或 DICOMDIR 路径。",
     )
     return parser.parse_args()
 
@@ -101,6 +133,89 @@ def clean_text(value: Any) -> str:
     text = str(value).split("\x00", 1)[0]
     text = "".join(char for char in text if char.isprintable())
     return text.strip()
+
+
+def parse_float(value: Any) -> float | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def parse_int(value: Any) -> int | None:
+    text = clean_text(value)
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def parse_pixel_spacing(value: Any) -> tuple[float | None, float | None]:
+    if value is None:
+        return None, None
+
+    if isinstance(value, (list, tuple)):
+        items = [parse_float(item) for item in value[:2]]
+        while len(items) < 2:
+            items.append(None)
+        return items[0], items[1]
+
+    text = clean_text(value)
+    if not text:
+        return None, None
+
+    parts = [part.strip() for part in text.split(",") if part.strip()]
+    if len(parts) < 2:
+        return None, None
+    return parse_float(parts[0]), parse_float(parts[1])
+
+
+def derive_physical_size_mm(rows: int | None, columns: int | None, pixel_spacing: tuple[float | None, float | None]) -> tuple[float | None, float | None]:
+    if rows is None or columns is None:
+        return None, None
+    row_spacing, column_spacing = pixel_spacing
+    physical_height = rows * row_spacing if row_spacing and row_spacing > 0 else None
+    physical_width = columns * column_spacing if column_spacing and column_spacing > 0 else None
+    return physical_width, physical_height
+
+
+def classify_fundus_source_kind(
+    ds: pydicom.dataset.FileDataset,
+    classification: str,
+    *,
+    from_embedded_fundus: bool,
+) -> str:
+    sop_class_uid = clean_text(getattr(ds, "SOPClassUID", ""))
+    number_of_frames = parse_int(getattr(ds, "NumberOfFrames", None))
+
+    if sop_class_uid == OPHTHALMIC_PHOTOGRAPHY_SOP_CLASS_UID:
+        return "fundus_photo"
+    if classification == "multi_frame_image" or (number_of_frames is not None and number_of_frames > 1):
+        return "multiframe_localizer"
+    if classification == "single_frame_image" or from_embedded_fundus:
+        return "enface"
+    return "fundus"
+
+
+def source_kind_priority(source_kind: str) -> int:
+    return FUNDUS_SOURCE_PRIORITY.get(source_kind, 99)
+
+
+def describe_fundus_source_kind(source_kind: str) -> str:
+    return FUNDUS_SOURCE_LABELS.get(source_kind, source_kind)
+
+
+def scope_rank(candidate: FundusCandidate, frame_of_reference_uid: str, series_instance_uid: str) -> int:
+    if frame_of_reference_uid and candidate.frame_of_reference_uid == frame_of_reference_uid:
+        return 0
+    if series_instance_uid and candidate.series_instance_uid == series_instance_uid:
+        return 1
+    return 2
 
 
 def normalize_to_uint8(image: np.ndarray) -> np.ndarray:
@@ -210,25 +325,158 @@ def make_projection_fundus(volume_slices: np.ndarray) -> np.ndarray:
     return normalize_to_uint8(projection)
 
 
-def build_raster_segments(num_slices: int, fundus_shape: tuple[int, int]) -> tuple[list, tuple[float, float, float, float] | None]:
-    height, width = fundus_shape[:2]
-    if num_slices <= 0:
-        return [], None
+def build_reference_bounds(
+    reference_shape: tuple[int, int],
+    *,
+    reference_source_kind: str,
+    reference_physical_width_mm: float | None = None,
+    reference_physical_height_mm: float | None = None,
+    scan_width_mm: float | None = None,
+    scan_height_mm: float | None = None,
+) -> tuple[float, float, float, float]:
+    height, width = reference_shape[:2]
+    if reference_source_kind in {"enface", "multiframe_localizer"}:
+        return 0.0, 0.0, float(max(width - 1, 1)), float(max(height - 1, 1))
 
-    box_w = width * 0.66
-    box_h = height * 0.66
-    x0 = (width - box_w) / 2.0
-    y0 = (height - box_h) / 2.0
+    if (
+        reference_physical_width_mm
+        and reference_physical_height_mm
+        and scan_width_mm
+        and scan_height_mm
+        and reference_physical_width_mm > 0
+        and reference_physical_height_mm > 0
+        and scan_width_mm > 0
+        and scan_height_mm > 0
+    ):
+        box_w = min(width, width * (scan_width_mm / reference_physical_width_mm))
+        box_h = min(height, height * (scan_height_mm / reference_physical_height_mm))
+        if box_w < width * 0.1:
+            box_w = width * 0.66
+        if box_h < height * 0.1:
+            box_h = height * 0.66
+    else:
+        box_w = width * 0.66
+        box_h = height * 0.66
+
+    x0 = max(0.0, (width - box_w) / 2.0)
+    y0 = max(0.0, (height - box_h) / 2.0)
+    return x0, y0, float(box_w), float(box_h)
+
+
+def build_raster_segments_from_bounds(num_slices: int, bounds: tuple[float, float, float, float]) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    x0, y0, box_w, box_h = bounds
     x1 = x0 + box_w
     y1 = y0 + box_h
 
+    if num_slices <= 0:
+        return []
     if num_slices == 1:
         y_values = [(y0 + y1) / 2.0]
     else:
         y_values = np.linspace(y0, y1, num_slices)
+    return [((x0, float(y_val)), (x1, float(y_val))) for y_val in y_values]
 
-    segments = [((x0, float(y_val)), (x1, float(y_val))) for y_val in y_values]
-    return segments, (x0, y0, box_w, box_h)
+
+def build_overlay_outline(bounds: tuple[float, float, float, float] | None) -> list[tuple[float, float]] | None:
+    if bounds is None:
+        return None
+    x0, y0, width, height = bounds
+    x1 = x0 + width
+    y1 = y0 + height
+    return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+
+
+def warp_points(points: list[tuple[float, float]], matrix: np.ndarray | None) -> list[tuple[float, float]]:
+    if not points:
+        return []
+    if matrix is None:
+        return [(float(x), float(y)) for x, y in points]
+    point_array = np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)
+    if matrix.shape == (2, 3):
+        warped = cv2.transform(point_array, matrix)
+    elif matrix.shape == (3, 3):
+        warped = cv2.perspectiveTransform(point_array, matrix)
+    else:
+        raise ValueError(f"Unsupported transform shape: {matrix.shape}")
+    return [tuple(map(float, point)) for point in warped.reshape(-1, 2)]
+
+
+def warp_segments(
+    segments: list[tuple[tuple[float, float], tuple[float, float]]],
+    matrix: np.ndarray | None,
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    if matrix is None:
+        return segments
+    warped_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for start, end in segments:
+        warped = warp_points([start, end], matrix)
+        warped_segments.append((warped[0], warped[1]))
+    return warped_segments
+
+
+def preprocess_registration_image(image: np.ndarray, *, long_side: int = 900) -> tuple[np.ndarray, float]:
+    gray = to_gray_image(image)
+    gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+    gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+    scale = long_side / max(gray.shape)
+    resized = cv2.resize(gray, (max(1, int(round(gray.shape[1] * scale))), max(1, int(round(gray.shape[0] * scale)))))
+    return resized, float(scale)
+
+
+def register_reference_to_fundus(
+    reference_image: np.ndarray,
+    fundus_image: np.ndarray,
+) -> tuple[np.ndarray | None, float | None]:
+    if reference_image.shape[:2] == fundus_image.shape[:2] and np.array_equal(reference_image, fundus_image):
+        return np.eye(2, 3, dtype=np.float32), 1.0
+
+    fundus_prepared, fundus_scale = preprocess_registration_image(fundus_image)
+    reference_prepared, reference_scale = preprocess_registration_image(reference_image)
+
+    motion = np.eye(2, 3, dtype=np.float32)
+    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 150, 1e-5)
+    try:
+        correlation, motion = cv2.findTransformECC(
+            fundus_prepared,
+            reference_prepared,
+            motion,
+            cv2.MOTION_AFFINE,
+            criteria,
+            None,
+            5,
+        )
+    except cv2.error:
+        return None, None
+
+    scale_reference = np.array([[reference_scale, 0.0, 0.0], [0.0, reference_scale, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+    inv_scale_fundus = np.array([[1.0 / fundus_scale, 0.0, 0.0], [0.0, 1.0 / fundus_scale, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+    motion_h = np.vstack([motion, [0.0, 0.0, 1.0]]).astype(np.float32)
+    original_motion = inv_scale_fundus @ motion_h @ scale_reference
+    return original_motion[:2], float(correlation)
+
+
+def build_raster_segments(
+    num_slices: int,
+    fundus_shape: tuple[int, int],
+    *,
+    fundus_source_kind: str = "fundus",
+    fundus_physical_width_mm: float | None = None,
+    fundus_physical_height_mm: float | None = None,
+    scan_width_mm: float | None = None,
+    scan_height_mm: float | None = None,
+) -> tuple[list, tuple[float, float, float, float] | None]:
+    if num_slices <= 0:
+        return [], None
+
+    bounds = build_reference_bounds(
+        fundus_shape,
+        reference_source_kind=fundus_source_kind,
+        reference_physical_width_mm=fundus_physical_width_mm,
+        reference_physical_height_mm=fundus_physical_height_mm,
+        scan_width_mm=scan_width_mm,
+        scan_height_mm=scan_height_mm,
+    )
+    return build_raster_segments_from_bounds(num_slices, bounds), bounds
 
 
 def build_overlay_spokes(bounds: tuple[float, float, float, float] | None) -> list[tuple[tuple[float, float], tuple[float, float]]]:
@@ -285,18 +533,137 @@ def score_fundus_candidate(candidate: FundusCandidate, laterality: str) -> float
     score = candidate.score
     if candidate.laterality and laterality and candidate.laterality == laterality:
         score += 1_000_000.0
-    if candidate.source_kind == "multiframe_localizer":
-        score += 50_000.0
+    score -= float(source_kind_priority(candidate.source_kind)) * 100_000.0
     return score
 
 
-def choose_best_fundus(candidates: list[FundusCandidate], laterality: str) -> FundusCandidate | None:
+def geometry_match_penalty(
+    candidate: FundusCandidate,
+    *,
+    scan_width_mm: float | None,
+    scan_height_mm: float | None,
+) -> float:
+    if (
+        candidate.physical_width_mm is None
+        or candidate.physical_height_mm is None
+        or scan_width_mm is None
+        or scan_height_mm is None
+        or candidate.physical_width_mm <= 0
+        or candidate.physical_height_mm <= 0
+        or scan_width_mm <= 0
+        or scan_height_mm <= 0
+    ):
+        return float("inf")
+
+    width_ratio = abs(math.log(max(scan_width_mm, 1e-6) / max(candidate.physical_width_mm, 1e-6)))
+    height_ratio = abs(math.log(max(scan_height_mm, 1e-6) / max(candidate.physical_height_mm, 1e-6)))
+    return width_ratio + height_ratio
+
+
+def choose_best_fundus(
+    candidates: list[FundusCandidate],
+    laterality: str,
+    *,
+    frame_of_reference_uid: str,
+    series_instance_uid: str,
+    scan_width_mm: float | None,
+    scan_height_mm: float | None,
+) -> FundusCandidate | None:
     if not candidates:
         return None
-    return max(candidates, key=lambda candidate: score_fundus_candidate(candidate, laterality))
+
+    exact_laterality = [
+        candidate
+        for candidate in candidates
+        if candidate.laterality and laterality and candidate.laterality == laterality
+    ]
+    pool = exact_laterality or candidates
+
+    best_source_priority = min(source_kind_priority(candidate.source_kind) for candidate in pool)
+    source_tier = [candidate for candidate in pool if source_kind_priority(candidate.source_kind) == best_source_priority]
+
+    best_scope = min(scope_rank(candidate, frame_of_reference_uid, series_instance_uid) for candidate in source_tier)
+    scoped = [
+        candidate
+        for candidate in source_tier
+        if scope_rank(candidate, frame_of_reference_uid, series_instance_uid) == best_scope
+    ]
+
+    by_geometry = [
+        (
+            geometry_match_penalty(
+                candidate,
+                scan_width_mm=scan_width_mm,
+                scan_height_mm=scan_height_mm,
+            ),
+            candidate,
+        )
+        for candidate in scoped
+    ]
+    finite_matches = [item for item in by_geometry if math.isfinite(item[0])]
+    if finite_matches:
+        best_penalty = min(item[0] for item in finite_matches)
+        close_matches = [candidate for penalty, candidate in finite_matches if penalty <= best_penalty + 0.20]
+        return max(close_matches, key=lambda candidate: score_fundus_candidate(candidate, laterality))
+
+    return max(scoped, key=lambda candidate: score_fundus_candidate(candidate, laterality))
 
 
-def build_metadata_text(exam_dir: Path, patient_id: str, source_file: Path, volume: np.ndarray, fundus_candidate: FundusCandidate | None) -> str:
+def geometry_reference_priority(candidate: FundusCandidate, display_candidate: FundusCandidate | None) -> tuple[int, int, float]:
+    preferred = {
+        "enface": 0,
+        "multiframe_localizer": 1,
+        "fundus_photo": 2,
+        "fundus": 3,
+    }
+    same_as_display = int(
+        display_candidate is not None
+        and candidate.source_file == display_candidate.source_file
+        and candidate.source_kind == display_candidate.source_kind
+        and candidate.width == display_candidate.width
+        and candidate.height == display_candidate.height
+    )
+    return preferred.get(candidate.source_kind, 9), same_as_display, -candidate.score
+
+
+def choose_geometry_reference(
+    candidates: list[FundusCandidate],
+    laterality: str,
+    *,
+    display_candidate: FundusCandidate | None,
+    frame_of_reference_uid: str,
+    series_instance_uid: str,
+) -> FundusCandidate | None:
+    if not candidates:
+        return None
+
+    exact_laterality = [
+        candidate
+        for candidate in candidates
+        if candidate.laterality and laterality and candidate.laterality == laterality
+    ]
+    pool = exact_laterality or candidates
+    best_scope = min(scope_rank(candidate, frame_of_reference_uid, series_instance_uid) for candidate in pool)
+    scoped = [
+        candidate
+        for candidate in pool
+        if scope_rank(candidate, frame_of_reference_uid, series_instance_uid) == best_scope
+    ]
+    return min(scoped, key=lambda candidate: geometry_reference_priority(candidate, display_candidate))
+
+
+def build_metadata_text(
+    exam_dir: Path,
+    patient_id: str,
+    source_file: Path,
+    volume: np.ndarray,
+    fundus_candidate: FundusCandidate | None,
+    geometry_candidate: FundusCandidate | None,
+    registration_score: float | None,
+    *,
+    scan_width_mm: float | None,
+    scan_height_mm: float | None,
+) -> str:
     gray_volume = to_gray_volume(volume)
     metadata = {
         "exam_dir": str(exam_dir),
@@ -306,8 +673,17 @@ def build_metadata_text(exam_dir: Path, patient_id: str, source_file: Path, volu
         "slice_shape": [int(gray_volume.shape[1]), int(gray_volume.shape[2])],
         "fundus_source": fundus_candidate.source_file if fundus_candidate else "projection-fallback",
         "fundus_kind": fundus_candidate.source_kind if fundus_candidate else "projection-fallback",
-        "overlay_note": "Fundus overlay is approximate for Zeiss DICOM export; not for clinical measurement.",
-        "bscan_guides": "heuristic top/lower layer guides",
+        "fundus_kind_label": describe_fundus_source_kind(fundus_candidate.source_kind) if fundus_candidate else describe_fundus_source_kind("projection-fallback"),
+        "geometry_reference_source": geometry_candidate.source_file if geometry_candidate else None,
+        "geometry_reference_kind": geometry_candidate.source_kind if geometry_candidate else None,
+        "geometry_reference_kind_label": describe_fundus_source_kind(geometry_candidate.source_kind) if geometry_candidate else None,
+        "registration_score": registration_score,
+        "fundus_physical_width_mm": fundus_candidate.physical_width_mm if fundus_candidate else None,
+        "fundus_physical_height_mm": fundus_candidate.physical_height_mm if fundus_candidate else None,
+        "scan_width_mm": scan_width_mm,
+        "scan_height_mm": scan_height_mm,
+        "overlay_note": "优先使用 OCT enface/localizer 与眼底图做仿射配准；失败时退回像素间距估算。",
+        "bscan_guides": "B-scan 引导线为启发式估计结果。",
     }
     return json.dumps(metadata, indent=2, ensure_ascii=False)
 
@@ -330,10 +706,25 @@ def load_exam(exam_dir: Path) -> ExamViewModel:
     pending_volumes: list[dict[str, Any]] = []
 
     for dcm_file in dcm_files:
-        ds = safe_dcmread(dcm_file)
-        classification = classify_dicom(ds)
-        if classification == "non_image_dicom":
-            continue
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ds = safe_dcmread(dcm_file)
+            classification = classify_dicom(ds)
+            if classification == "non_image_dicom":
+                continue
+
+            rows = getattr(ds, "Rows", None)
+            columns = getattr(ds, "Columns", None)
+            pixel_spacing = parse_pixel_spacing(getattr(ds, "PixelSpacing", None))
+            physical_width_mm, physical_height_mm = derive_physical_size_mm(rows, columns, pixel_spacing)
+            frame_of_reference_uid = clean_text(getattr(ds, "FrameOfReferenceUID", ""))
+            series_instance_uid = clean_text(getattr(ds, "SeriesInstanceUID", ""))
+            spacing_between_slices = parse_float(getattr(ds, "SpacingBetweenSlices", None))
+            fundus_source_kind = classify_fundus_source_kind(
+                ds,
+                classification,
+                from_embedded_fundus=True,
+            )
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -352,10 +743,14 @@ def load_exam(exam_dir: Path) -> ExamViewModel:
                     image=image_array,
                     laterality=clean_text(getattr(image, "laterality", "")) or file_laterality,
                     source_file=dcm_file.name,
-                    source_kind="fundus",
+                    source_kind=fundus_source_kind,
                     width=width,
                     height=height,
                     score=score,
+                    physical_width_mm=physical_width_mm,
+                    physical_height_mm=physical_height_mm,
+                    frame_of_reference_uid=frame_of_reference_uid,
+                    series_instance_uid=series_instance_uid,
                 )
             )
 
@@ -370,6 +765,14 @@ def load_exam(exam_dir: Path) -> ExamViewModel:
                         "volume_index": index,
                         "laterality": clean_text(getattr(volume, "laterality", "")) or file_laterality,
                         "volume": gray_volume,
+                        "frame_of_reference_uid": frame_of_reference_uid,
+                        "series_instance_uid": series_instance_uid,
+                        "scan_width_mm": physical_width_mm,
+                        "scan_height_mm": (
+                            spacing_between_slices * max(gray_volume.shape[0] - 1, 1)
+                            if spacing_between_slices and spacing_between_slices > 0 and gray_volume.shape[0] > 1
+                            else physical_height_mm
+                        ),
                     }
                 )
             elif gray_volume.shape[0] > 0:
@@ -382,10 +785,18 @@ def load_exam(exam_dir: Path) -> ExamViewModel:
                         image=localizer_image,
                         laterality=clean_text(getattr(volume, "laterality", "")) or file_laterality,
                         source_file=dcm_file.name,
-                        source_kind="multiframe_localizer",
+                        source_kind=classify_fundus_source_kind(
+                            ds,
+                            classification,
+                            from_embedded_fundus=False,
+                        ),
                         width=local_w,
                         height=local_h,
                         score=score,
+                        physical_width_mm=physical_width_mm,
+                        physical_height_mm=physical_height_mm,
+                        frame_of_reference_uid=frame_of_reference_uid,
+                        series_instance_uid=series_instance_uid,
                     )
                 )
 
@@ -394,10 +805,54 @@ def load_exam(exam_dir: Path) -> ExamViewModel:
 
     models: list[VolumeViewModel] = []
     for item in pending_volumes:
-        best_fundus = choose_best_fundus(fundus_candidates, item["laterality"])
-        fundus_image = best_fundus.image if best_fundus is not None else make_projection_fundus(item["volume"])
-        segments, bounds = build_raster_segments(item["volume"].shape[0], fundus_image.shape)
+        best_fundus = choose_best_fundus(
+            fundus_candidates,
+            item["laterality"],
+            frame_of_reference_uid=item["frame_of_reference_uid"],
+            series_instance_uid=item["series_instance_uid"],
+            scan_width_mm=item["scan_width_mm"],
+            scan_height_mm=item["scan_height_mm"],
+        )
+        displayed_fundus = best_fundus.image if best_fundus is not None else make_projection_fundus(item["volume"])
+        geometry_candidate = choose_geometry_reference(
+            fundus_candidates,
+            item["laterality"],
+            display_candidate=best_fundus,
+            frame_of_reference_uid=item["frame_of_reference_uid"],
+            series_instance_uid=item["series_instance_uid"],
+        )
+        geometry_image = geometry_candidate.image if geometry_candidate is not None else displayed_fundus
+        segments, bounds = build_raster_segments(
+            item["volume"].shape[0],
+            geometry_image.shape,
+            fundus_source_kind=geometry_candidate.source_kind if geometry_candidate else (best_fundus.source_kind if best_fundus else "projection-fallback"),
+            fundus_physical_width_mm=geometry_candidate.physical_width_mm if geometry_candidate else (best_fundus.physical_width_mm if best_fundus else None),
+            fundus_physical_height_mm=geometry_candidate.physical_height_mm if geometry_candidate else (best_fundus.physical_height_mm if best_fundus else None),
+            scan_width_mm=item["scan_width_mm"],
+            scan_height_mm=item["scan_height_mm"],
+        )
+        outline = build_overlay_outline(bounds)
         spokes = build_overlay_spokes(bounds)
+        registration_score = 1.0
+        transform = None
+        if geometry_candidate is not None and best_fundus is not None:
+            same_image = (
+                geometry_candidate.source_file == best_fundus.source_file
+                and geometry_candidate.source_kind == best_fundus.source_kind
+                and geometry_candidate.image.shape == best_fundus.image.shape
+                and np.array_equal(geometry_candidate.image, best_fundus.image)
+            )
+            if not same_image:
+                transform, registration_score = register_reference_to_fundus(geometry_candidate.image, best_fundus.image)
+        if transform is not None:
+            segments = warp_segments(segments, transform)
+            spokes = warp_segments(spokes, transform)
+            if outline is not None:
+                outline = warp_points(outline, transform)
+                xs = [point[0] for point in outline]
+                ys = [point[1] for point in outline]
+                bounds = (min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+        fundus_image = displayed_fundus
         label = item["source_file"].stem
         if item["laterality"]:
             label = f"{label} ({item['laterality']})"
@@ -408,6 +863,10 @@ def load_exam(exam_dir: Path) -> ExamViewModel:
             source_file=item["source_file"],
             volume=item["volume"],
             fundus_candidate=best_fundus,
+            geometry_candidate=geometry_candidate,
+            registration_score=registration_score,
+            scan_width_mm=item["scan_width_mm"],
+            scan_height_mm=item["scan_height_mm"],
         )
 
         models.append(
@@ -420,8 +879,11 @@ def load_exam(exam_dir: Path) -> ExamViewModel:
                 fundus=to_display_image(fundus_image),
                 scan_segments=segments,
                 overlay_bounds=bounds,
+                overlay_outline=outline,
                 overlay_spokes=spokes,
                 metadata_text=metadata_text,
+                fundus_source_file=best_fundus.source_file if best_fundus else "projection-fallback",
+                fundus_source_kind=best_fundus.source_kind if best_fundus else "projection-fallback",
             )
         )
 
@@ -441,17 +903,26 @@ def load_exams(path: str | Path) -> list[ExamViewModel]:
 
 class ViewerCanvas(FigureCanvas):
     def __init__(self):
-        self.figure = Figure(figsize=(10, 5), tight_layout=True)
+        self.figure = Figure(figsize=(10, 5), tight_layout=True, facecolor="#111827")
         super().__init__(self.figure)
         self.ax_fundus = self.figure.add_subplot(1, 2, 1)
         self.ax_bscan = self.figure.add_subplot(1, 2, 2)
+        for axis in (self.ax_fundus, self.ax_bscan):
+            axis.set_facecolor("#0B1220")
+
+
+def apply_image_window(image: np.ndarray, contrast_percent: int, brightness_offset: int) -> np.ndarray:
+    contrast = max(1, contrast_percent) / 100.0
+    adjusted = image.astype(np.float32) * contrast + float(brightness_offset)
+    return np.clip(adjusted, 0, 255).astype(np.uint8)
 
 
 class ZeissViewerWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Zeiss OCT Viewer")
-        self.resize(1400, 860)
+        self.setWindowTitle("蔡司 OCT 查看器")
+        self.resize(1560, 920)
+        self.setFont(QFont("Microsoft YaHei UI", 10))
 
         self.settings = QSettings("OpenAI", "ZeissOCTViewer")
         self.source_path: str | None = None
@@ -460,15 +931,22 @@ class ZeissViewerWindow(QMainWindow):
         self.current_volume_index = 0
         self.current_slice_index = 0
 
+        self._apply_styles()
         self.canvas = ViewerCanvas()
         self.canvas.mpl_connect("button_press_event", self.on_canvas_click)
         self.canvas.mpl_connect("scroll_event", self.on_canvas_scroll)
+        self.setStatusBar(QStatusBar(self))
 
-        self.open_button = QPushButton("打开蔡司目录")
+        self.open_button = QPushButton("打开目录")
         self.open_button.clicked.connect(self.open_path_dialog)
+
+        self.snapshot_button = QPushButton("保存截图")
+        self.snapshot_button.clicked.connect(self.save_snapshot)
 
         self.path_label = QLabel("未打开目录")
         self.path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.path_label.setWordWrap(True)
+        self.path_label.setObjectName("PathLabel")
 
         self.exam_combo = QComboBox()
         self.exam_combo.currentIndexChanged.connect(self.on_exam_changed)
@@ -476,17 +954,35 @@ class ZeissViewerWindow(QMainWindow):
         self.volume_combo = QComboBox()
         self.volume_combo.currentIndexChanged.connect(self.on_volume_changed)
 
+        self.prev_volume_button = QPushButton("上一组")
+        self.prev_volume_button.clicked.connect(self.previous_volume)
+
+        self.next_volume_button = QPushButton("下一组")
+        self.next_volume_button.clicked.connect(self.next_volume)
+
         self.slice_slider = QSlider(Qt.Horizontal)
         self.slice_slider.setMinimum(0)
+        self.slice_slider.setSingleStep(1)
+        self.slice_slider.setPageStep(5)
+        self.slice_slider.setTickPosition(QSlider.TicksBelow)
         self.slice_slider.valueChanged.connect(self.on_slice_changed)
 
         self.slice_spin = QSpinBox()
         self.slice_spin.setMinimum(0)
         self.slice_spin.valueChanged.connect(self.on_slice_changed)
 
-        self.slice_info_label = QLabel("Slice: -")
+        self.prev_slice_button = QPushButton("上一层")
+        self.prev_slice_button.clicked.connect(self.previous_slice)
+
+        self.next_slice_button = QPushButton("下一层")
+        self.next_slice_button.clicked.connect(self.next_slice)
+
+        self.slice_info_label = QLabel("切片：-")
+        self.slice_info_label.setObjectName("SliceInfo")
+
         self.summary_label = QLabel("等待导入蔡司 OCT 数据")
         self.summary_label.setWordWrap(True)
+        self.summary_label.setObjectName("SummaryLabel")
 
         self.show_spokes_checkbox = QCheckBox("显示辅助星形线")
         self.show_spokes_checkbox.setChecked(True)
@@ -496,43 +992,229 @@ class ZeissViewerWindow(QMainWindow):
         self.show_guides_checkbox.setChecked(True)
         self.show_guides_checkbox.toggled.connect(self.redraw_views)
 
+        self.contrast_slider = QSlider(Qt.Horizontal)
+        self.contrast_slider.setRange(50, 200)
+        self.contrast_slider.setValue(100)
+        self.contrast_slider.setSingleStep(5)
+        self.contrast_slider.valueChanged.connect(self.redraw_views)
+
+        self.brightness_slider = QSlider(Qt.Horizontal)
+        self.brightness_slider.setRange(-80, 80)
+        self.brightness_slider.setValue(0)
+        self.brightness_slider.setSingleStep(2)
+        self.brightness_slider.valueChanged.connect(self.redraw_views)
+
+        self.reset_view_button = QPushButton("重置显示")
+        self.reset_view_button.clicked.connect(self.reset_display_controls)
+
+        self.exam_info_value = QLabel("-")
+        self.volume_info_value = QLabel("-")
+        self.fundus_info_value = QLabel("-")
+        self.geometry_info_value = QLabel("-")
+
+        self.legend_label = QLabel(
+            "图例：绿色=当前 B-scan，金色=其它切片，红框=扫描范围，青/粉线=B-scan 引导线"
+        )
+        self.legend_label.setWordWrap(True)
+        self.legend_label.setObjectName("LegendLabel")
+
         self.metadata_edit = QPlainTextEdit()
         self.metadata_edit.setReadOnly(True)
+        self.metadata_edit.setFont(QFont("Microsoft YaHei UI", 10))
 
         self._build_toolbar()
         self._build_layout()
+        self._install_shortcuts()
         self._set_empty_state()
 
+    def _apply_styles(self):
+        self.setStyleSheet(
+            """
+            QMainWindow, QWidget { background: #111827; color: #E5E7EB; }
+            QToolBar { background: #0F172A; border: none; spacing: 6px; padding: 6px; }
+            QPushButton {
+                background: #1F2937;
+                color: #E5E7EB;
+                border: 1px solid #334155;
+                border-radius: 8px;
+                padding: 8px 12px;
+            }
+            QPushButton:hover { background: #273449; }
+            QPushButton:pressed { background: #334155; }
+            QComboBox, QSpinBox, QPlainTextEdit {
+                background: #0F172A;
+                color: #E5E7EB;
+                border: 1px solid #334155;
+                border-radius: 8px;
+                padding: 6px;
+            }
+            QSlider::groove:horizontal {
+                border: 1px solid #334155;
+                height: 6px;
+                background: #0F172A;
+                border-radius: 3px;
+            }
+            QSlider::handle:horizontal {
+                background: #38BDF8;
+                border: 1px solid #7DD3FC;
+                width: 16px;
+                margin: -6px 0;
+                border-radius: 8px;
+            }
+            QGroupBox {
+                border: 1px solid #334155;
+                border-radius: 10px;
+                margin-top: 12px;
+                padding-top: 12px;
+                font-weight: 600;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 4px;
+                color: #93C5FD;
+            }
+            QLabel#PathLabel, QLabel#SummaryLabel, QLabel#LegendLabel {
+                background: #0F172A;
+                border: 1px solid #334155;
+                border-radius: 8px;
+                padding: 10px;
+            }
+            QLabel#SliceInfo {
+                background: #0369A1;
+                color: white;
+                border-radius: 12px;
+                padding: 6px 12px;
+                font-weight: 700;
+            }
+            QStatusBar {
+                background: #0F172A;
+                color: #CBD5E1;
+            }
+            """
+        )
+
+    def _install_shortcuts(self):
+        QShortcut(QKeySequence(Qt.Key_Left), self, self.previous_slice)
+        QShortcut(QKeySequence(Qt.Key_Right), self, self.next_slice)
+        QShortcut(QKeySequence(Qt.Key_A), self, self.previous_slice)
+        QShortcut(QKeySequence(Qt.Key_D), self, self.next_slice)
+        QShortcut(QKeySequence(Qt.Key_PageUp), self, self.previous_volume)
+        QShortcut(QKeySequence(Qt.Key_PageDown), self, self.next_volume)
+        QShortcut(QKeySequence(Qt.Key_Home), self, lambda: self.set_slice_index(0))
+        QShortcut(QKeySequence(Qt.Key_End), self, self.jump_to_last_slice)
+        QShortcut(QKeySequence("Ctrl+O"), self, self.open_path_dialog)
+        QShortcut(QKeySequence("Ctrl+S"), self, self.save_snapshot)
+
     def _build_toolbar(self):
-        toolbar = QToolBar("Main")
+        toolbar = QToolBar("主工具栏")
+        toolbar.setMovable(False)
         self.addToolBar(toolbar)
 
         open_action = QAction("打开目录", self)
         open_action.triggered.connect(self.open_path_dialog)
         toolbar.addAction(open_action)
 
+        snapshot_action = QAction("保存截图", self)
+        snapshot_action.triggered.connect(self.save_snapshot)
+        toolbar.addAction(snapshot_action)
+
+        toolbar.addSeparator()
+
+        prev_volume_action = QAction("上一组", self)
+        prev_volume_action.triggered.connect(self.previous_volume)
+        toolbar.addAction(prev_volume_action)
+
+        next_volume_action = QAction("下一组", self)
+        next_volume_action.triggered.connect(self.next_volume)
+        toolbar.addAction(next_volume_action)
+
+        toolbar.addSeparator()
+
+        prev_slice_action = QAction("上一层", self)
+        prev_slice_action.triggered.connect(self.previous_slice)
+        toolbar.addAction(prev_slice_action)
+
+        next_slice_action = QAction("下一层", self)
+        next_slice_action.triggered.connect(self.next_slice)
+        toolbar.addAction(next_slice_action)
+
+    def _make_info_row(self, title: str, value_widget: QLabel) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        title_label = QLabel(title)
+        title_label.setStyleSheet("color: #93C5FD; font-weight: 600;")
+        value_widget.setWordWrap(True)
+        layout.addWidget(title_label, 0)
+        layout.addWidget(value_widget, 1)
+        return row
+
     def _build_layout(self):
         control_widget = QWidget()
         control_layout = QVBoxLayout(control_widget)
-        control_layout.addWidget(self.open_button)
-        control_layout.addWidget(self.path_label)
-        control_layout.addWidget(QLabel("Exam"))
-        control_layout.addWidget(self.exam_combo)
-        control_layout.addWidget(QLabel("Volume"))
-        control_layout.addWidget(self.volume_combo)
-        control_layout.addWidget(QLabel("Slice"))
-        control_layout.addWidget(self.slice_slider)
-        control_layout.addWidget(self.slice_spin)
-        control_layout.addWidget(self.slice_info_label)
-        control_layout.addWidget(self.show_spokes_checkbox)
-        control_layout.addWidget(self.show_guides_checkbox)
-        control_layout.addWidget(self.summary_label)
+        control_layout.setSpacing(10)
+
+        source_group = QGroupBox("数据源")
+        source_layout = QVBoxLayout(source_group)
+        source_layout.addWidget(self.open_button)
+        source_layout.addWidget(self.snapshot_button)
+        source_layout.addWidget(self.path_label)
+
+        exam_group = QGroupBox("检查 / 体数据")
+        exam_layout = QVBoxLayout(exam_group)
+        exam_layout.addWidget(QLabel("检查"))
+        exam_layout.addWidget(self.exam_combo)
+        exam_layout.addWidget(QLabel("体数据"))
+        exam_layout.addWidget(self.volume_combo)
+        volume_button_row = QWidget()
+        volume_button_layout = QHBoxLayout(volume_button_row)
+        volume_button_layout.setContentsMargins(0, 0, 0, 0)
+        volume_button_layout.addWidget(self.prev_volume_button)
+        volume_button_layout.addWidget(self.next_volume_button)
+        exam_layout.addWidget(volume_button_row)
+
+        navigation_group = QGroupBox("切片导航")
+        navigation_layout = QGridLayout(navigation_group)
+        navigation_layout.addWidget(self.slice_info_label, 0, 0, 1, 2)
+        navigation_layout.addWidget(self.prev_slice_button, 1, 0)
+        navigation_layout.addWidget(self.next_slice_button, 1, 1)
+        navigation_layout.addWidget(self.slice_slider, 2, 0, 1, 2)
+        navigation_layout.addWidget(self.slice_spin, 3, 0, 1, 2)
+
+        display_group = QGroupBox("显示设置")
+        display_layout = QGridLayout(display_group)
+        display_layout.addWidget(self.show_spokes_checkbox, 0, 0, 1, 2)
+        display_layout.addWidget(self.show_guides_checkbox, 1, 0, 1, 2)
+        display_layout.addWidget(QLabel("B-scan 对比度"), 2, 0)
+        display_layout.addWidget(self.contrast_slider, 2, 1)
+        display_layout.addWidget(QLabel("B-scan 亮度"), 3, 0)
+        display_layout.addWidget(self.brightness_slider, 3, 1)
+        display_layout.addWidget(self.reset_view_button, 4, 0, 1, 2)
+
+        info_group = QGroupBox("对应信息")
+        info_layout = QVBoxLayout(info_group)
+        info_layout.addWidget(self._make_info_row("检查", self.exam_info_value))
+        info_layout.addWidget(self._make_info_row("体数据", self.volume_info_value))
+        info_layout.addWidget(self._make_info_row("眼底图", self.fundus_info_value))
+        info_layout.addWidget(self._make_info_row("配准范围", self.geometry_info_value))
+        info_layout.addWidget(self.summary_label)
+        info_layout.addWidget(self.legend_label)
+
+        control_layout.addWidget(source_group)
+        control_layout.addWidget(exam_group)
+        control_layout.addWidget(navigation_group)
+        control_layout.addWidget(display_group)
+        control_layout.addWidget(info_group)
         control_layout.addStretch(1)
 
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.addWidget(self.canvas, stretch=4)
-        right_layout.addWidget(QLabel("Metadata"))
+        metadata_title = QLabel("元数据")
+        metadata_title.setStyleSheet("font-weight: 700; color: #93C5FD; padding: 4px 0;")
+        right_layout.addWidget(metadata_title)
         right_layout.addWidget(self.metadata_edit, stretch=2)
 
         splitter = QSplitter()
@@ -540,9 +1222,11 @@ class ZeissViewerWindow(QMainWindow):
         splitter.addWidget(right_widget)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+        splitter.setSizes([360, 1180])
 
         container = QWidget()
         layout = QHBoxLayout(container)
+        layout.setContentsMargins(10, 10, 10, 10)
         layout.addWidget(splitter)
         self.setCentralWidget(container)
 
@@ -563,14 +1247,22 @@ class ZeissViewerWindow(QMainWindow):
         self.slice_spin.blockSignals(True)
         self.slice_spin.setMaximum(0)
         self.slice_spin.setValue(0)
+        self.slice_spin.setSuffix("")
         self.slice_spin.blockSignals(False)
 
+        self.exam_info_value.setText("-")
+        self.volume_info_value.setText("-")
+        self.fundus_info_value.setText("-")
+        self.geometry_info_value.setText("-")
         self.metadata_edit.setPlainText("")
+        self.summary_label.setText("等待导入蔡司 OCT 数据")
         self.canvas.ax_fundus.clear()
         self.canvas.ax_bscan.clear()
-        self.canvas.ax_fundus.set_title("Fundus / Zeiss")
-        self.canvas.ax_bscan.set_title("B-scan")
+        self.canvas.ax_fundus.set_title("眼底图 / 蔡司", color="#E5E7EB")
+        self.canvas.ax_bscan.set_title("B-scan", color="#E5E7EB")
+        self.slice_info_label.setText("切片：-")
         self.canvas.draw_idle()
+        self.statusBar().showMessage("未加载数据")
 
     def get_last_open_dir(self) -> str:
         last_dir = self.settings.value("last_dir", "", type=str)
@@ -586,7 +1278,7 @@ class ZeissViewerWindow(QMainWindow):
     def open_path_dialog(self):
         directory = QFileDialog.getExistingDirectory(
             self,
-            "选择蔡司导出目录 / Exam 目录",
+            "选择蔡司导出目录 / 检查目录",
             self.get_last_open_dir(),
         )
         if directory:
@@ -613,6 +1305,7 @@ class ZeissViewerWindow(QMainWindow):
             self.exam_combo.addItem(exam.label)
         self.exam_combo.blockSignals(False)
         self.exam_combo.setCurrentIndex(0)
+        self.statusBar().showMessage(f"已加载 {len(exams)} 个 exam", 5000)
         self.refresh_exam()
 
     def current_exam(self) -> ExamViewModel | None:
@@ -641,6 +1334,7 @@ class ZeissViewerWindow(QMainWindow):
         self.current_volume_index = 0
         self.current_slice_index = 0
         self.volume_combo.setCurrentIndex(0)
+        self.exam_info_value.setText(f"{exam.exam_id} | 患者 ID={exam.patient_id or '-'}")
         self.refresh_volume()
 
     def refresh_volume(self):
@@ -655,18 +1349,31 @@ class ZeissViewerWindow(QMainWindow):
         self.slice_slider.blockSignals(True)
         self.slice_slider.setMaximum(max_index)
         self.slice_slider.setValue(self.current_slice_index)
+        self.slice_slider.setTickInterval(max(1, (max_index + 1) // 10))
         self.slice_slider.blockSignals(False)
 
         self.slice_spin.blockSignals(True)
         self.slice_spin.setMaximum(max_index)
         self.slice_spin.setValue(self.current_slice_index)
+        self.slice_spin.setSuffix(f" / {max_index + 1}")
         self.slice_spin.blockSignals(False)
 
         exam = self.current_exam()
         self.metadata_edit.setPlainText(model.metadata_text)
         self.summary_label.setText(
-            f"Exam {exam.exam_id} | {model.source_file} | {len(model.slices)} slices | Laterality: {model.laterality or '-'}"
+            f"检查 {exam.exam_id} | {model.source_file} | 共 {len(model.slices)} 层 | 眼别：{model.laterality or '-'} | 点击左图跳转切片，滚轮翻页"
         )
+        self.volume_info_value.setText(
+            f"{model.source_file} | 序列={model.volume_id} | 尺寸={tuple(model.slices.shape)}"
+        )
+        self.fundus_info_value.setText(
+            f"{model.fundus_source_file} | {describe_fundus_source_kind(model.fundus_source_kind)} | 尺寸={tuple(model.fundus.shape)}"
+        )
+        if model.overlay_bounds is not None:
+            _, _, width, height = model.overlay_bounds
+            self.geometry_info_value.setText(f"覆盖框：{width:.1f}px × {height:.1f}px")
+        else:
+            self.geometry_info_value.setText("-")
         self.redraw_views()
 
     def redraw_views(self):
@@ -683,9 +1390,23 @@ class ZeissViewerWindow(QMainWindow):
         else:
             self.canvas.ax_fundus.imshow(fundus, origin="upper")
         self.canvas.ax_fundus.axis("off")
-        self.canvas.ax_fundus.set_title("Fundus / Zeiss")
+        self.canvas.ax_fundus.set_title(
+            f"眼底图 / {describe_fundus_source_kind(model.fundus_source_kind)} / {Path(model.fundus_source_file).stem}",
+            color="#E5E7EB",
+            fontsize=13,
+        )
 
-        if model.overlay_bounds is not None:
+        if model.overlay_outline:
+            outline = np.asarray(model.overlay_outline + [model.overlay_outline[0]], dtype=np.float32)
+            self.canvas.ax_fundus.plot(
+                outline[:, 0],
+                outline[:, 1],
+                color="red",
+                linewidth=1.5,
+                linestyle="--",
+                alpha=0.85,
+            )
+        elif model.overlay_bounds is not None:
             x0, y0, width, height = model.overlay_bounds
             self.canvas.ax_fundus.add_patch(
                 Rectangle(
@@ -705,13 +1426,15 @@ class ZeissViewerWindow(QMainWindow):
                 self.canvas.ax_fundus.plot(
                     [start_x, end_x],
                     [start_y, end_y],
-                    color="#d8b14a",
+                    color="#D8B14A",
                     alpha=0.45,
                     linewidth=0.9,
                 )
 
+        current_center_x = None
+        current_center_y = None
         for index, segment in enumerate(model.scan_segments):
-            color = "#66ff66" if index == self.current_slice_index else "#d8b14a"
+            color = "#66FF66" if index == self.current_slice_index else "#D8B14A"
             alpha = 0.95 if index == self.current_slice_index else 0.38
             linewidth = 2.2 if index == self.current_slice_index else 0.8
             (start_x, start_y), (end_x, end_y) = segment
@@ -722,24 +1445,46 @@ class ZeissViewerWindow(QMainWindow):
                 alpha=alpha,
                 linewidth=linewidth,
             )
+            if index == self.current_slice_index:
+                current_center_x = (start_x + end_x) / 2.0
+                current_center_y = (start_y + end_y) / 2.0
+
+        if current_center_x is not None and current_center_y is not None:
+            self.canvas.ax_fundus.scatter(
+                [current_center_x],
+                [current_center_y],
+                s=28,
+                color="#66FF66",
+                edgecolors="white",
+                linewidths=0.7,
+                zorder=5,
+            )
 
         bscan = normalize_to_uint8(model.slices[self.current_slice_index])
+        bscan = apply_image_window(
+            bscan,
+            contrast_percent=self.contrast_slider.value(),
+            brightness_offset=self.brightness_slider.value(),
+        )
         self.canvas.ax_bscan.imshow(bscan, cmap="gray", aspect="auto", origin="upper")
         self.canvas.ax_bscan.axis("off")
         self.canvas.ax_bscan.set_title(
-            f"B-scan {self.current_slice_index + 1}/{len(model.slices)}"
+            f"B-scan {self.current_slice_index + 1}/{len(model.slices)}",
+            color="#E5E7EB",
+            fontsize=13,
         )
 
         if self.show_guides_checkbox.isChecked():
             guide_top, guide_lower = estimate_bscan_guides(bscan)
             x_coords = np.arange(bscan.shape[1])
             if guide_top is not None:
-                self.canvas.ax_bscan.plot(x_coords, guide_top, color="#00ffff", linewidth=1.0, alpha=0.95)
+                self.canvas.ax_bscan.plot(x_coords, guide_top, color="#00FFFF", linewidth=1.0, alpha=0.95)
             if guide_lower is not None:
-                self.canvas.ax_bscan.plot(x_coords, guide_lower, color="#ff66cc", linewidth=1.0, alpha=0.95)
+                self.canvas.ax_bscan.plot(x_coords, guide_lower, color="#FF66CC", linewidth=1.0, alpha=0.95)
 
-        self.slice_info_label.setText(
-            f"Slice: {self.current_slice_index + 1} / {len(model.slices)}"
+        self.slice_info_label.setText(f"切片：{self.current_slice_index + 1}/{len(model.slices)}")
+        self.statusBar().showMessage(
+            f"{model.source_file} | 切片 {self.current_slice_index + 1}/{len(model.slices)} | 眼底图={describe_fundus_source_kind(model.fundus_source_kind)}"
         )
         self.canvas.draw_idle()
 
@@ -759,7 +1504,60 @@ class ZeissViewerWindow(QMainWindow):
         self.slice_spin.setValue(index)
         self.slice_spin.blockSignals(False)
 
+        self.slice_info_label.setText(f"切片：{index + 1}/{len(model.slices)}")
         self.redraw_views()
+
+    def previous_slice(self):
+        self.set_slice_index(self.current_slice_index - 1)
+
+    def next_slice(self):
+        self.set_slice_index(self.current_slice_index + 1)
+
+    def previous_volume(self):
+        exam = self.current_exam()
+        if exam is None or not exam.volumes:
+            return
+        target = max(0, self.current_volume_index - 1)
+        if target != self.current_volume_index:
+            self.volume_combo.setCurrentIndex(target)
+
+    def next_volume(self):
+        exam = self.current_exam()
+        if exam is None or not exam.volumes:
+            return
+        target = min(len(exam.volumes) - 1, self.current_volume_index + 1)
+        if target != self.current_volume_index:
+            self.volume_combo.setCurrentIndex(target)
+
+    def jump_to_last_slice(self):
+        model = self.current_model()
+        if model is None:
+            return
+        self.set_slice_index(len(model.slices) - 1)
+
+    def reset_display_controls(self):
+        self.show_spokes_checkbox.setChecked(True)
+        self.show_guides_checkbox.setChecked(True)
+        self.contrast_slider.setValue(100)
+        self.brightness_slider.setValue(0)
+        self.redraw_views()
+
+    def save_snapshot(self):
+        model = self.current_model()
+        default_name = "zeiss_viewer_snapshot.png"
+        if model is not None:
+            default_name = f"{Path(model.source_file).stem}_slice_{self.current_slice_index + 1:03d}.png"
+
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "保存当前界面截图",
+            str(Path(self.get_last_open_dir() or ".") / default_name),
+            "PNG Image (*.png)",
+        )
+        if not filename:
+            return
+        self.canvas.figure.savefig(filename, dpi=150, bbox_inches="tight")
+        self.statusBar().showMessage(f"截图已保存到 {filename}", 5000)
 
     def on_exam_changed(self, index: int):
         if index < 0 or index >= len(self.exams):

@@ -32,6 +32,29 @@ pip install oct-converter
 ## Usage
 A number of example usage scripts are included in `examples/`.
 
+### Local web viewer
+
+This repo also includes a lightweight local web viewer for OCT files:
+
+```bash
+python scripts/oct_web_viewer.py /path/to/file.e2e
+```
+
+It starts a local server and opens a browser page where you can:
+
+- browse B-scan slices with a slider or keyboard
+- view projection images
+- inspect fundus images when present
+- inspect available metadata
+- overlay segmentation contours when available
+- open local files from the browser via the native file picker and reuse recent paths
+
+For Zeiss `.img` files, custom dimensions can be provided:
+
+```bash
+python scripts/oct_web_viewer.py /path/to/file.img --img-rows 1024 --img-cols 512 --img-interlaced
+```
+
 Here is an example of reading a .fds file:
 
 ```python

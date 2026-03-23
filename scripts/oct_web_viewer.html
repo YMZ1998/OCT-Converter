@@ -1,0 +1,905 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OCT Web Viewer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel-2: #1f2937;
+      --border: #334155;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --danger: #f87171;
+      --shadow: 0 12px 30px rgba(0, 0, 0, 0.25);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      background: linear-gradient(180deg, #0b1220 0%, var(--bg) 100%);
+      color: var(--text);
+    }
+
+    .app { display: grid; grid-template-rows: auto 1fr; min-height: 100vh; }
+    .topbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.88);
+      backdrop-filter: blur(8px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .title {
+      min-width: 180px;
+      font-size: 20px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .title .dot {
+      width: 10px;
+      height: 10px;
+      background: var(--accent);
+      border-radius: 999px;
+      box-shadow: 0 0 18px rgba(56, 189, 248, 0.85);
+    }
+
+    .pathbar {
+      flex: 1;
+      display: flex;
+      gap: 10px;
+      min-width: 320px;
+    }
+
+    input[type="text"], select, input[type="range"] { width: 100%; }
+    input[type="text"], select {
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+    }
+
+    button {
+      padding: 10px 14px;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #082f49;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button.secondary {
+      background: var(--panel-2);
+      color: var(--text);
+      border-color: var(--border);
+    }
+
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .grow { flex: 1 1 280px; }
+    .status { width: 100%; color: var(--muted); font-size: 13px; }
+    .status.error { color: var(--danger); }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 320px 1fr 360px;
+      gap: 16px;
+      padding: 16px;
+      min-height: 0;
+    }
+
+    .panel {
+      background: rgba(17, 24, 39, 0.95);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    .panel-header {
+      padding: 14px 16px;
+      font-weight: 700;
+      border-bottom: 1px solid var(--border);
+      background: rgba(31, 41, 55, 0.65);
+    }
+
+    .panel-body {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      height: calc(100% - 52px);
+      min-height: 0;
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 110px 1fr;
+      gap: 8px 10px;
+      font-size: 13px;
+    }
+
+    .kv div:nth-child(odd) { color: var(--muted); }
+    .viewer-wrap { display: grid; grid-template-rows: auto 1fr auto; gap: 12px; height: 100%; }
+    .viewer-toolbar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .viewer-controls { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .control { display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--muted); }
+
+    .canvas-stage {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px;
+      background:
+        linear-gradient(45deg, rgba(255,255,255,0.02) 25%, transparent 25%, transparent 75%, rgba(255,255,255,0.02) 75%),
+        linear-gradient(45deg, rgba(255,255,255,0.02) 25%, transparent 25%, transparent 75%, rgba(255,255,255,0.02) 75%),
+        #020617;
+      background-size: 24px 24px;
+      background-position: 0 0, 12px 12px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      min-height: 260px;
+      max-height: min(68vh, 720px);
+    }
+
+    canvas {
+      max-width: 100%;
+      max-height: 100%;
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      display: block;
+    }
+
+    .empty { color: var(--muted); text-align: center; padding: 24px; line-height: 1.8; }
+    .thumb {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: #020617;
+      min-height: 160px;
+      max-height: 240px;
+      height: auto;
+      object-fit: contain;
+    }
+
+    .meta {
+      flex: 1;
+      min-height: 0;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: #020617;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: Consolas, "SFMono-Regular", monospace;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(56, 189, 248, 0.15);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      width: fit-content;
+    }
+
+    .hint { font-size: 12px; color: var(--muted); }
+
+    @media (max-width: 1280px) {
+      .layout { grid-template-columns: 280px 1fr; }
+      .panel.side-right { grid-column: 1 / -1; }
+    }
+
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+      .viewer-toolbar, .viewer-controls { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="topbar">
+      <div class="title"><span class="dot"></span> OCT Web Viewer</div>
+      <div class="pathbar">
+        <input id="pathInput" class="grow" type="text" placeholder="输入 OCT 文件路径，例如 D:\data\sample.e2e">
+        <button id="browseButton" class="secondary">选择文件</button>
+        <button id="loadButton">加载文件</button>
+        <button id="refreshButton" class="secondary">刷新状态</button>
+        <button id="resetViewButton" class="secondary">重置视图</button>
+      </div>
+      <div id="status" class="status">等待加载 OCT 文件。</div>
+    </div>
+
+    <div class="layout">
+      <section class="panel">
+        <div class="panel-header">数据概览</div>
+        <div class="panel-body">
+          <div class="kv">
+            <div>Reader</div><div id="readerValue">-</div>
+            <div>文件路径</div><div id="pathValue">-</div>
+            <div>Volume 数</div><div id="volumeCountValue">0</div>
+            <div>Fundus 数</div><div id="fundusCountValue">0</div>
+          </div>
+          <div class="control">
+            <label for="recentSelect">最近文件</label>
+            <select id="recentSelect">
+              <option value="">暂无历史记录</option>
+            </select>
+          </div>
+          <div class="control">
+            <label for="volumeSelect">选择 Volume</label>
+            <select id="volumeSelect"></select>
+          </div>
+          <div class="control">
+            <label for="fundusSelect">选择 Fundus</label>
+            <select id="fundusSelect"></select>
+          </div>
+          <div class="pill" id="volumeBadge">未加载</div>
+          <div class="hint">支持滚轮切片、方向键切片、空格播放。</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">OCT 切片查看</div>
+        <div class="panel-body">
+          <div class="viewer-wrap">
+            <div class="viewer-toolbar">
+              <div class="control">
+                <label for="sliceSlider">切片</label>
+                <input id="sliceSlider" type="range" min="0" max="0" value="0">
+                <div id="sliceLabel" class="hint">Slice 0 / 0</div>
+              </div>
+              <div class="viewer-controls">
+                <button id="prevButton" class="secondary">上一张</button>
+                <button id="playButton" class="secondary">播放</button>
+                <button id="nextButton" class="secondary">下一张</button>
+                <button id="overlayButton" class="secondary">轮廓开</button>
+              </div>
+            </div>
+
+            <div class="canvas-stage" id="stage">
+              <canvas id="octCanvas" width="1024" height="512"></canvas>
+              <div id="emptyState" class="empty">加载后会在这里显示 OCT 切片。</div>
+            </div>
+
+            <div class="viewer-controls">
+              <div class="control">
+                <label for="contrastSlider">对比度</label>
+                <input id="contrastSlider" type="range" min="50" max="300" value="100">
+                <div id="contrastLabel" class="hint">100%</div>
+              </div>
+              <div class="control">
+                <label for="brightnessSlider">亮度</label>
+                <input id="brightnessSlider" type="range" min="-100" max="100" value="0">
+                <div id="brightnessLabel" class="hint">0</div>
+              </div>
+              <div class="control">
+                <label for="speedSlider">播放速度</label>
+                <input id="speedSlider" type="range" min="1" max="12" value="5">
+                <div id="speedLabel" class="hint">5 FPS</div>
+              </div>
+              <div class="control">
+                <label>轮廓图层</label>
+                <div id="contourNames" class="hint">-</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel side-right">
+        <div class="panel-header">投影与眼底</div>
+        <div class="panel-body">
+          <div class="control">
+            <label>Projection</label>
+            <img id="projectionImage" class="thumb" alt="projection preview">
+          </div>
+          <div class="control">
+            <label>Fundus</label>
+            <img id="fundusImage" class="thumb" alt="fundus preview">
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const STORAGE_KEYS = {
+      recentFiles: "oct-web-viewer.recent-files",
+      uiState: "oct-web-viewer.ui-state",
+    };
+
+    const DEFAULT_UI_STATE = {
+      contrast: 100,
+      brightness: 0,
+      speed: 5,
+      overlay: true,
+      lastPath: "",
+    };
+
+    const state = {
+      data: null,
+      volumeIndex: 0,
+      fundusIndex: 0,
+      sliceIndex: 0,
+      overlay: true,
+      playing: false,
+      busy: false,
+      timer: null,
+      renderToken: 0,
+      canvasNaturalWidth: 1024,
+      canvasNaturalHeight: 512,
+    };
+
+    const elements = {
+      pathInput: document.getElementById("pathInput"),
+      browseButton: document.getElementById("browseButton"),
+      loadButton: document.getElementById("loadButton"),
+      refreshButton: document.getElementById("refreshButton"),
+      resetViewButton: document.getElementById("resetViewButton"),
+      status: document.getElementById("status"),
+      readerValue: document.getElementById("readerValue"),
+      pathValue: document.getElementById("pathValue"),
+      volumeCountValue: document.getElementById("volumeCountValue"),
+      fundusCountValue: document.getElementById("fundusCountValue"),
+      recentSelect: document.getElementById("recentSelect"),
+      volumeSelect: document.getElementById("volumeSelect"),
+      fundusSelect: document.getElementById("fundusSelect"),
+      volumeBadge: document.getElementById("volumeBadge"),
+      sliceSlider: document.getElementById("sliceSlider"),
+      sliceLabel: document.getElementById("sliceLabel"),
+      prevButton: document.getElementById("prevButton"),
+      playButton: document.getElementById("playButton"),
+      nextButton: document.getElementById("nextButton"),
+      overlayButton: document.getElementById("overlayButton"),
+      contrastSlider: document.getElementById("contrastSlider"),
+      brightnessSlider: document.getElementById("brightnessSlider"),
+      speedSlider: document.getElementById("speedSlider"),
+      contrastLabel: document.getElementById("contrastLabel"),
+      brightnessLabel: document.getElementById("brightnessLabel"),
+      speedLabel: document.getElementById("speedLabel"),
+      contourNames: document.getElementById("contourNames"),
+      octCanvas: document.getElementById("octCanvas"),
+      projectionImage: document.getElementById("projectionImage"),
+      fundusImage: document.getElementById("fundusImage"),
+      emptyState: document.getElementById("emptyState"),
+      stage: document.getElementById("stage"),
+    };
+
+    const ctx = elements.octCanvas.getContext("2d");
+
+    function getUiState() {
+      try {
+        return { ...DEFAULT_UI_STATE, ...(JSON.parse(localStorage.getItem(STORAGE_KEYS.uiState)) || {}) };
+      } catch {
+        return { ...DEFAULT_UI_STATE };
+      }
+    }
+
+    function saveUiState() {
+      const payload = {
+        contrast: Number(elements.contrastSlider.value),
+        brightness: Number(elements.brightnessSlider.value),
+        speed: Number(elements.speedSlider.value),
+        overlay: state.overlay,
+        lastPath: elements.pathInput.value.trim(),
+      };
+      localStorage.setItem(STORAGE_KEYS.uiState, JSON.stringify(payload));
+    }
+
+    function loadRecentFiles() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(STORAGE_KEYS.recentFiles)) || [];
+        return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function renderRecentFiles() {
+      const recentFiles = loadRecentFiles();
+      elements.recentSelect.innerHTML = "";
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = recentFiles.length ? "选择最近文件" : "暂无历史记录";
+      elements.recentSelect.appendChild(placeholder);
+      recentFiles.forEach((filepath) => {
+        const option = document.createElement("option");
+        option.value = filepath;
+        option.textContent = filepath;
+        elements.recentSelect.appendChild(option);
+      });
+    }
+
+    function saveRecentFile(path) {
+      if (!path) return;
+      const recentFiles = loadRecentFiles().filter((item) => item !== path);
+      recentFiles.unshift(path);
+      localStorage.setItem(STORAGE_KEYS.recentFiles, JSON.stringify(recentFiles.slice(0, 8)));
+      renderRecentFiles();
+    }
+
+    function setBusy(isBusy, message = "") {
+      state.busy = isBusy;
+      [
+        elements.pathInput,
+        elements.browseButton,
+        elements.loadButton,
+        elements.refreshButton,
+        elements.resetViewButton,
+        elements.recentSelect,
+      ].forEach((element) => {
+        if (element) {
+          element.disabled = isBusy;
+        }
+      });
+      if (message) {
+        setStatus(message);
+      }
+    }
+
+    function setStatus(message, isError = false) {
+      elements.status.textContent = message;
+      elements.status.classList.toggle("error", Boolean(isError));
+    }
+
+    async function fetchJson(url) {
+      const response = await fetch(url, { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || "请求失败");
+      }
+      return payload;
+    }
+
+    function currentVolume() {
+      if (!state.data || !state.data.volumes.length) return null;
+      return state.data.volumes[state.volumeIndex] || null;
+    }
+
+    function currentFundus() {
+      if (!state.data || !state.data.fundusImages.length) return null;
+      return state.data.fundusImages[state.fundusIndex] || null;
+    }
+
+    function resetPlayback() {
+      if (state.timer) {
+        window.clearInterval(state.timer);
+        state.timer = null;
+      }
+      state.playing = false;
+      elements.playButton.textContent = "播放";
+    }
+
+    function updateLabels() {
+      const volume = currentVolume();
+      const sliceCount = volume ? volume.sliceCount : 0;
+      elements.sliceLabel.textContent = `Slice ${state.sliceIndex + (sliceCount ? 1 : 0)} / ${sliceCount}`;
+      elements.contrastLabel.textContent = `${elements.contrastSlider.value}%`;
+      elements.brightnessLabel.textContent = `${elements.brightnessSlider.value}`;
+      elements.speedLabel.textContent = `${elements.speedSlider.value} FPS`;
+      elements.overlayButton.textContent = state.overlay ? "轮廓开" : "轮廓关";
+      elements.contourNames.textContent = volume && volume.contourNames.length
+        ? volume.contourNames.join(", ")
+        : "无";
+    }
+
+    function renderSelectors() {
+      const volumes = state.data?.volumes || [];
+      const fundusImages = state.data?.fundusImages || [];
+
+      elements.volumeSelect.innerHTML = volumes.length
+        ? volumes.map((item, index) => `<option value="${index}">${item.label}</option>`).join("")
+        : `<option value="0">无 Volume</option>`;
+
+      elements.fundusSelect.innerHTML = fundusImages.length
+        ? fundusImages.map((item, index) => `<option value="${index}">${item.label}</option>`).join("")
+        : `<option value="0">无 Fundus</option>`;
+
+      elements.volumeSelect.value = String(Math.min(state.volumeIndex, Math.max(0, volumes.length - 1)));
+      elements.fundusSelect.value = String(Math.min(state.fundusIndex, Math.max(0, fundusImages.length - 1)));
+    }
+
+    function renderState() {
+      const loaded = Boolean(state.data?.loaded);
+      const volume = currentVolume();
+      const fundus = currentFundus();
+
+      elements.readerValue.textContent = loaded ? state.data.reader : "-";
+      elements.pathValue.textContent = loaded ? state.data.sourcePath : "-";
+      elements.volumeCountValue.textContent = String(state.data?.volumes?.length || 0);
+      elements.fundusCountValue.textContent = String(state.data?.fundusImages?.length || 0);
+      elements.volumeBadge.textContent = volume ? `${volume.width} × ${volume.height} · ${volume.sliceCount} slices` : "未加载";
+      elements.sliceSlider.disabled = !volume;
+      elements.prevButton.disabled = !volume;
+      elements.nextButton.disabled = !volume;
+      elements.playButton.disabled = !volume;
+      elements.overlayButton.disabled = !volume;
+      elements.sliceSlider.max = volume ? String(Math.max(0, volume.sliceCount - 1)) : "0";
+      elements.sliceSlider.value = volume ? String(Math.min(state.sliceIndex, volume.sliceCount - 1)) : "0";
+      elements.emptyState.style.display = volume ? "none" : "block";
+      renderSelectors();
+      updateLabels();
+
+      if (volume) {
+        elements.projectionImage.src = `/api/volume/${state.volumeIndex}/projection.png?ts=${Date.now()}`;
+      } else {
+        elements.projectionImage.removeAttribute("src");
+      }
+
+      if (fundus) {
+        elements.fundusImage.src = `/api/fundus/${state.fundusIndex}.png?ts=${Date.now()}`;
+      } else {
+        elements.fundusImage.removeAttribute("src");
+      }
+    }
+
+    function buildSliceUrl() {
+      return `/api/volume/${state.volumeIndex}/slice/${state.sliceIndex}.png?contrast=${elements.contrastSlider.value}&brightness=${elements.brightnessSlider.value}`;
+    }
+
+    function fitCanvasDisplay() {
+      const volume = currentVolume();
+      const width = state.canvasNaturalWidth || 1024;
+      const height = state.canvasNaturalHeight || 512;
+      const logicalWidth = volume?.displayWidthUnits || width;
+      const logicalHeight = volume?.displayHeightUnits || height;
+      const stageRect = elements.stage.getBoundingClientRect();
+      const maxWidth = Math.max(120, stageRect.width - 24);
+      const maxHeight = Math.max(180, stageRect.height - 24);
+      const scale = Math.min(maxWidth / logicalWidth, maxHeight / logicalHeight);
+      elements.octCanvas.style.width = `${Math.max(1, Math.round(logicalWidth * scale))}px`;
+      elements.octCanvas.style.height = `${Math.max(1, Math.round(logicalHeight * scale))}px`;
+    }
+
+    function applyMatchedFundus() {
+      const volume = currentVolume();
+      if (!volume) return;
+      if (typeof volume.matchedFundusIndex === "number" && volume.matchedFundusIndex >= 0) {
+        state.fundusIndex = volume.matchedFundusIndex;
+      }
+    }
+
+    async function drawCurrentSlice() {
+      const volume = currentVolume();
+      if (!volume) {
+        ctx.clearRect(0, 0, elements.octCanvas.width, elements.octCanvas.height);
+        return;
+      }
+
+      const token = ++state.renderToken;
+      const response = await fetch(`${buildSliceUrl()}&ts=${Date.now()}`, { cache: "no-store" });
+      if (!response.ok) {
+        const contentType = response.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
+          const payload = await response.json();
+          throw new Error(payload.error || "切片图像加载失败");
+        }
+        throw new Error(`切片图像加载失败：HTTP ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      let drawable = null;
+      let naturalWidth = volume.width;
+      let naturalHeight = volume.height;
+      let cleanup = null;
+
+      if (window.createImageBitmap) {
+        drawable = await createImageBitmap(blob);
+        naturalWidth = drawable.width || naturalWidth;
+        naturalHeight = drawable.height || naturalHeight;
+      } else {
+        const imageUrl = URL.createObjectURL(blob);
+        const image = new Image();
+        image.decoding = "async";
+        image.src = imageUrl;
+        await new Promise((resolve, reject) => {
+          image.onload = resolve;
+          image.onerror = () => reject(new Error("切片图像加载失败"));
+        });
+        drawable = image;
+        naturalWidth = image.naturalWidth || naturalWidth;
+        naturalHeight = image.naturalHeight || naturalHeight;
+        cleanup = () => URL.revokeObjectURL(imageUrl);
+      }
+
+      if (token !== state.renderToken) return;
+
+      state.canvasNaturalWidth = naturalWidth;
+      state.canvasNaturalHeight = naturalHeight;
+      elements.octCanvas.width = state.canvasNaturalWidth;
+      elements.octCanvas.height = state.canvasNaturalHeight;
+      fitCanvasDisplay();
+      ctx.clearRect(0, 0, elements.octCanvas.width, elements.octCanvas.height);
+      ctx.drawImage(drawable, 0, 0, elements.octCanvas.width, elements.octCanvas.height);
+      if (drawable && typeof drawable.close === "function") {
+        drawable.close();
+      }
+      if (cleanup) {
+        cleanup();
+      }
+
+      if (state.overlay && volume.contourNames.length) {
+        try {
+          const contourPayload = await fetchJson(`/api/volume/${state.volumeIndex}/contours/${state.sliceIndex}.json`);
+          if (token !== state.renderToken) return;
+          drawContours(contourPayload.contours || {}, elements.octCanvas.width, elements.octCanvas.height);
+        } catch (error) {
+          console.warn(error);
+        }
+      }
+    }
+
+    function drawContours(contours, width, height) {
+      const colors = ["#38bdf8", "#22c55e", "#f97316", "#f43f5e", "#a78bfa", "#facc15"];
+      const names = Object.keys(contours);
+      names.forEach((name, index) => {
+        const values = contours[name];
+        if (!values || !values.length) return;
+        ctx.beginPath();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = colors[index % colors.length];
+        let started = false;
+        values.forEach((yValue, xIndex) => {
+          if (yValue == null || Number.isNaN(yValue)) {
+            started = false;
+            return;
+          }
+          const x = (xIndex / Math.max(values.length - 1, 1)) * Math.max(width - 1, 1);
+          const y = Math.max(0, Math.min(height - 1, Number(yValue)));
+          if (!started) {
+            ctx.moveTo(x, y);
+            started = true;
+          } else {
+            ctx.lineTo(x, y);
+          }
+        });
+        ctx.stroke();
+      });
+    }
+
+    let renderDebounce = null;
+    function scheduleDraw() {
+      if (renderDebounce) window.clearTimeout(renderDebounce);
+      renderDebounce = window.setTimeout(() => {
+        drawCurrentSlice().catch((error) => setStatus(error.message, true));
+      }, 80);
+    }
+
+    async function refreshState() {
+      state.data = await fetchJson("/api/state");
+      if (state.data.loaded) {
+        const maxVolume = Math.max(0, state.data.volumes.length - 1);
+        const maxFundus = Math.max(0, state.data.fundusImages.length - 1);
+        state.volumeIndex = Math.min(state.volumeIndex, maxVolume);
+        state.fundusIndex = Math.min(state.fundusIndex, maxFundus);
+        const volume = currentVolume();
+        state.sliceIndex = volume ? Math.min(state.sliceIndex, volume.sliceCount - 1) : 0;
+        applyMatchedFundus();
+      } else {
+        state.volumeIndex = 0;
+        state.fundusIndex = 0;
+        state.sliceIndex = 0;
+      }
+      renderState();
+      scheduleDraw();
+    }
+
+    async function loadPath() {
+      const filepath = elements.pathInput.value.trim();
+      if (!filepath) {
+        setStatus("请先输入一个 OCT 文件路径。", true);
+        return;
+      }
+      setBusy(true, "正在读取 OCT 文件，请稍候...");
+      try {
+        state.data = await fetchJson(`/api/load?path=${encodeURIComponent(filepath)}`);
+        state.volumeIndex = 0;
+        state.fundusIndex = 0;
+        state.sliceIndex = 0;
+        applyMatchedFundus();
+        resetPlayback();
+        elements.pathInput.value = state.data.sourcePath || filepath;
+        saveRecentFile(elements.pathInput.value.trim());
+        saveUiState();
+        renderState();
+        scheduleDraw();
+        setStatus(`已加载：${state.data.sourcePath}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function pickFileAndLoad() {
+      setBusy(true, "正在打开系统文件选择框...");
+      try {
+        const payload = await fetchJson("/api/pick-file");
+        if (payload.cancelled) {
+          setStatus("已取消选择文件。");
+          return;
+        }
+        state.data = payload;
+        state.volumeIndex = 0;
+        state.fundusIndex = 0;
+        state.sliceIndex = 0;
+        applyMatchedFundus();
+        resetPlayback();
+        elements.pathInput.value = state.data.sourcePath || "";
+        saveRecentFile(elements.pathInput.value.trim());
+        saveUiState();
+        renderState();
+        scheduleDraw();
+        setStatus(`已加载：${state.data.sourcePath}`);
+      } catch (error) {
+        setStatus(error.message, true);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    function stepSlice(delta) {
+      const volume = currentVolume();
+      if (!volume) return;
+      const sliceCount = volume.sliceCount;
+      state.sliceIndex = (state.sliceIndex + delta + sliceCount) % sliceCount;
+      elements.sliceSlider.value = String(state.sliceIndex);
+      updateLabels();
+      scheduleDraw();
+    }
+
+    function togglePlay() {
+      const volume = currentVolume();
+      if (!volume) return;
+      if (state.playing) {
+        resetPlayback();
+        return;
+      }
+      state.playing = true;
+      elements.playButton.textContent = "暂停";
+      const intervalMs = Math.max(80, Math.round(1000 / Number(elements.speedSlider.value)));
+      state.timer = window.setInterval(() => stepSlice(1), intervalMs);
+    }
+
+    function resetViewControls() {
+      elements.contrastSlider.value = "100";
+      elements.brightnessSlider.value = "0";
+      elements.speedSlider.value = "5";
+      state.overlay = true;
+      updateLabels();
+      saveUiState();
+      scheduleDraw();
+    }
+
+    function applyPersistedUiState() {
+      const persisted = getUiState();
+      elements.contrastSlider.value = String(persisted.contrast ?? DEFAULT_UI_STATE.contrast);
+      elements.brightnessSlider.value = String(persisted.brightness ?? DEFAULT_UI_STATE.brightness);
+      elements.speedSlider.value = String(persisted.speed ?? DEFAULT_UI_STATE.speed);
+      state.overlay = Boolean(persisted.overlay ?? DEFAULT_UI_STATE.overlay);
+      if (!elements.pathInput.value) {
+        elements.pathInput.value = persisted.lastPath || "";
+      }
+      updateLabels();
+    }
+
+    elements.browseButton.addEventListener("click", pickFileAndLoad);
+    elements.loadButton.addEventListener("click", loadPath);
+    elements.refreshButton.addEventListener("click", () => {
+      setBusy(true, "正在刷新状态...");
+      refreshState()
+        .then(() => setStatus("状态已刷新。"))
+        .catch((error) => setStatus(error.message, true))
+        .finally(() => setBusy(false));
+    });
+    elements.resetViewButton.addEventListener("click", resetViewControls);
+    elements.recentSelect.addEventListener("change", () => {
+      if (!elements.recentSelect.value) return;
+      elements.pathInput.value = elements.recentSelect.value;
+      saveUiState();
+    });
+    elements.volumeSelect.addEventListener("change", () => {
+      state.volumeIndex = Number(elements.volumeSelect.value);
+      state.fundusIndex = 0;
+      state.sliceIndex = 0;
+      applyMatchedFundus();
+      renderState();
+      scheduleDraw();
+    });
+    elements.fundusSelect.addEventListener("change", () => {
+      state.fundusIndex = Number(elements.fundusSelect.value);
+      renderState();
+    });
+    elements.sliceSlider.addEventListener("input", () => {
+      state.sliceIndex = Number(elements.sliceSlider.value);
+      updateLabels();
+      scheduleDraw();
+    });
+    elements.prevButton.addEventListener("click", () => stepSlice(-1));
+    elements.nextButton.addEventListener("click", () => stepSlice(1));
+    elements.playButton.addEventListener("click", togglePlay);
+    elements.overlayButton.addEventListener("click", () => {
+      state.overlay = !state.overlay;
+      updateLabels();
+      saveUiState();
+      scheduleDraw();
+    });
+    elements.contrastSlider.addEventListener("input", () => {
+      updateLabels();
+      saveUiState();
+      scheduleDraw();
+    });
+    elements.brightnessSlider.addEventListener("input", () => {
+      updateLabels();
+      saveUiState();
+      scheduleDraw();
+    });
+    elements.speedSlider.addEventListener("input", () => {
+      updateLabels();
+      saveUiState();
+      if (state.playing) {
+        resetPlayback();
+        togglePlay();
+      }
+    });
+    elements.pathInput.addEventListener("input", saveUiState);
+    elements.pathInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") loadPath();
+    });
+    elements.stage.addEventListener("wheel", (event) => {
+      if (!currentVolume()) return;
+      event.preventDefault();
+      stepSlice(event.deltaY > 0 ? 1 : -1);
+    }, { passive: false });
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowLeft") stepSlice(-1);
+      if (event.key === "ArrowRight") stepSlice(1);
+      if (event.key === " ") {
+        event.preventDefault();
+        togglePlay();
+      }
+    });
+    window.addEventListener("resize", fitCanvasDisplay);
+
+    renderRecentFiles();
+    applyPersistedUiState();
+    refreshState()
+      .then(() => {
+        if (state.data?.loaded) {
+          elements.pathInput.value = state.data.sourcePath || "";
+          saveRecentFile(elements.pathInput.value.trim());
+          setStatus(`已加载：${state.data.sourcePath}`);
+        } else {
+          setStatus("等待加载 OCT 文件。");
+        }
+      })
+      .catch((error) => setStatus(error.message, true));
+  </script>
+</body>
+</html>
