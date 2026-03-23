@@ -33,7 +33,6 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
-    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -52,7 +51,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from scripts.zeiss_dicom import ZEISSDicom
+from scripts.old.zeiss_dicom import ZEISSDicom
 
 OPHTHALMIC_PHOTOGRAPHY_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.77.1.5.1"
 

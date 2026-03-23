@@ -112,6 +112,23 @@ def apply_image_window(image: np.ndarray, contrast_percent: int, brightness_offs
     return np.clip(adjusted, 0, 255).astype(np.uint8)
 
 
+def safe_positive_float(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if np.isfinite(parsed) and parsed > 0 else None
+
+
+def normalize_laterality_code(value: Any) -> str:
+    normalized = str(value or "").strip().upper()
+    if normalized in {"R", "OD"}:
+        return "R"
+    if normalized in {"L", "OS"}:
+        return "L"
+    return normalized
+
+
 def make_projection_fundus(volume_slices: list[np.ndarray]) -> np.ndarray:
     volume_array = np.asarray(volume_slices)
     if volume_array.ndim != 3:
@@ -281,11 +298,47 @@ def choose_localizer(
     return None, f"disabled-count-mismatch:{len(localizers)}/{total_volumes}"
 
 
+def choose_e2e_field_size_degrees(
+    eye_data_entries: list[dict[str, Any]],
+    *,
+    laterality: str,
+    volume_index: int,
+    total_volumes: int,
+    default_field_size_degrees: float = 30.0,
+) -> tuple[float, str]:
+    laterality_code = normalize_laterality_code(laterality)
+    candidates = []
+    for entry in eye_data_entries:
+        if not isinstance(entry, dict):
+            continue
+        field_size = safe_positive_float(entry.get("vfieldMean"))
+        if field_size is None:
+            continue
+        candidates.append((normalize_laterality_code(entry.get("eyeSide")), field_size))
+
+    if laterality_code:
+        same_laterality = [field_size for eye_side, field_size in candidates if eye_side == laterality_code]
+        if len(same_laterality) == 1:
+            return same_laterality[0], "eye-data-laterality"
+
+    if len(candidates) == total_volumes and 0 <= volume_index < len(candidates):
+        return candidates[volume_index][1], "eye-data-count"
+
+    if len(candidates) == 1:
+        return candidates[0][1], "eye-data-single"
+
+    if candidates:
+        return candidates[0][1], "eye-data-first"
+
+    return default_field_size_degrees, "default-30deg"
+
+
 def project_e2e_overlay(
     group: list[dict[str, Any]],
     localizer_entry: dict[str, Any] | None,
     localizer_mode: str,
     fundus_shape: tuple[int, int] | tuple[int, int, int],
+    field_size_degrees: float = 30.0,
 ) -> OverlayState:
     if not group:
         scan_segments = build_parallel_segments(0, fundus_shape)
@@ -309,7 +362,7 @@ def project_e2e_overlay(
 
     fundus_height, fundus_width = fundus_shape[:2]
     points = [point for segment in raw_segments for point in segment]
-    field_size_degrees = 30.0
+    field_size_degrees = safe_positive_float(field_size_degrees) or 30.0
     transform_values = (localizer_entry or {}).get("transform")
 
     candidate_sets: list[tuple[str, list[tuple[float, float]]]] = []
@@ -525,7 +578,10 @@ def load_e2e_file(filepath: Path) -> list[VolumeViewModel]:
     reader = E2E(filepath)
     volumes = reader.read_oct_volume()
     fundus_images = reader.read_fundus_image()
-    metadata = reader.read_all_metadata()
+    try:
+        metadata = reader.read_all_metadata()
+    except Exception:
+        metadata = {}
 
     if not volumes:
         raise RuntimeError("E2E 文件中未读取到 OCT 体数据。")
@@ -533,6 +589,7 @@ def load_e2e_file(filepath: Path) -> list[VolumeViewModel]:
     slice_counts = [volume.num_slices for volume in volumes]
     bscan_groups = partition_bscan_metadata(metadata.get("bscan_data", []), slice_counts)
     localizers = metadata.get("localizer", [])
+    eye_data_entries = metadata.get("eye_data", [])
 
     models = []
     total_volumes = len(volumes)
@@ -548,7 +605,19 @@ def load_e2e_file(filepath: Path) -> list[VolumeViewModel]:
 
         group = bscan_groups[index] if index < len(bscan_groups) else []
         localizer_entry, localizer_mode = choose_localizer(localizers, index, total_volumes)
-        overlay = project_e2e_overlay(group, localizer_entry, localizer_mode, fundus.shape)
+        field_size_degrees, field_size_mode = choose_e2e_field_size_degrees(
+            eye_data_entries,
+            laterality=volume.laterality or "",
+            volume_index=index,
+            total_volumes=total_volumes,
+        )
+        overlay = project_e2e_overlay(
+            group,
+            localizer_entry,
+            localizer_mode,
+            fundus.shape,
+            field_size_degrees=field_size_degrees,
+        )
         if not group:
             overlay.scan_segments = build_parallel_segments(volume.num_slices, fundus.shape)
             overlay.bounds = compute_scan_bounds(overlay.scan_segments)
@@ -572,6 +641,8 @@ def load_e2e_file(filepath: Path) -> list[VolumeViewModel]:
             "overlay_mode": overlay.overlay_mode,
             "projection_mode": overlay.projection_mode,
             "localizer_mode": overlay.localizer_mode,
+            "field_size_degrees": field_size_degrees,
+            "field_size_mode": field_size_mode,
             "warning": overlay.warning,
         }
 

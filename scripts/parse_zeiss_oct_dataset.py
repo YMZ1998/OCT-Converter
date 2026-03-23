@@ -4,7 +4,6 @@ import argparse
 import csv
 import json
 import math
-import os
 import sys
 import warnings
 from collections import Counter
@@ -35,7 +34,7 @@ def ensure_repo_on_syspath() -> None:
 
 def get_zeiss_reader_class():
     ensure_repo_on_syspath()
-    from scripts.zeiss_dicom import ZEISSDicom
+    from scripts.old.zeiss_dicom import ZEISSDicom
 
     return ZEISSDicom
 
