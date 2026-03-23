@@ -11,15 +11,43 @@ DEFAULT_INPUT_DIR = (
 )
 
 
-def is_fundus_rc(reference_coordinates, fundus_height):
-    x0, y0, x1, y1 = reference_coordinates
-    return (
-        np.isfinite([x0, y0, x1, y1]).all()
-        and 0 <= y0 <= fundus_height
-        and 0 <= y1 <= fundus_height
-        and abs(y0 - 0) < 5
-        and abs(y1 - fundus_height) < 5
-    )
+def get_pixel_spacing(ds):
+    pixel_spacing = getattr(ds, "PixelSpacing", None)
+    if pixel_spacing is not None and len(pixel_spacing) >= 2:
+        return float(pixel_spacing[0]), float(pixel_spacing[1])
+
+    shared_groups = getattr(ds, "SharedFunctionalGroupsSequence", None)
+    if shared_groups and hasattr(shared_groups[0], "PixelMeasuresSequence"):
+        pixel_spacing = getattr(shared_groups[0].PixelMeasuresSequence[0], "PixelSpacing", None)
+        if pixel_spacing is not None and len(pixel_spacing) >= 2:
+            return float(pixel_spacing[0]), float(pixel_spacing[1])
+
+    return None
+
+
+def transpose_tupai_reference_coordinates(reference_coordinates):
+    coordinates = np.array(reference_coordinates, dtype=float, copy=True)
+    if coordinates.ndim == 1:
+        return coordinates[[1, 0, 3, 2]]
+    return coordinates[:, [1, 0, 3, 2]]
+
+
+def compute_expected_bscan_length_pixels(fundus_ds, oct_ds):
+    fundus_spacing = get_pixel_spacing(fundus_ds)
+    oct_spacing = get_pixel_spacing(oct_ds)
+    if fundus_spacing is None or oct_spacing is None:
+        return None
+
+    bscan_width_pixels = float(getattr(oct_ds, "Columns", 0))
+    if bscan_width_pixels <= 0:
+        return None
+
+    bscan_width_mm = bscan_width_pixels * oct_spacing[1]
+    fundus_x_mm_per_pixel = fundus_spacing[1]
+    if fundus_x_mm_per_pixel <= 0:
+        return None
+
+    return bscan_width_mm / fundus_x_mm_per_pixel
 
 
 def extract_reference_coordinates(ds_bscan, num_slices):
@@ -41,48 +69,86 @@ def extract_reference_coordinates(ds_bscan, num_slices):
     return np.array(coordinates, dtype=float)
 
 
-def choose_coordinate_sequence(raw_coordinates, num_slices, fundus_height):
+def score_tupai_coordinate_sequence(
+    candidate_coordinates,
+    fundus_width,
+    fundus_height,
+    expected_bscan_length_pixels,
+):
+    finite_mask = np.isfinite(candidate_coordinates).all(axis=1)
+    finite_coordinates = candidate_coordinates[finite_mask]
+    if len(finite_coordinates) == 0:
+        return (-1, float("-inf"), float("-inf"), float("-inf"))
+
+    deltas = finite_coordinates[:, 2:4] - finite_coordinates[:, 0:2]
+    lengths = np.linalg.norm(deltas, axis=1)
+    median_length = float(np.median(lengths))
+
+    edge_margin = np.minimum.reduce(
+        [
+            finite_coordinates[:, 0],
+            finite_coordinates[:, 2],
+            fundus_width - finite_coordinates[:, 0],
+            fundus_width - finite_coordinates[:, 2],
+            finite_coordinates[:, 1],
+            finite_coordinates[:, 3],
+            fundus_height - finite_coordinates[:, 1],
+            fundus_height - finite_coordinates[:, 3],
+        ]
+    )
+    median_edge_margin = float(np.median(edge_margin))
+
+    if expected_bscan_length_pixels is None:
+        length_score = -median_length
+    else:
+        length_score = -abs(median_length - expected_bscan_length_pixels)
+
+    return (
+        int(np.count_nonzero(finite_mask)),
+        length_score,
+        median_edge_margin,
+        -float(np.std(lengths)),
+    )
+
+
+def choose_coordinate_sequence(
+    raw_coordinates,
+    num_slices,
+    fundus_width,
+    fundus_height,
+    expected_bscan_length_pixels,
+):
     candidates = []
 
     if len(raw_coordinates) == num_slices:
-        candidates.append(("direct", raw_coordinates))
+        candidates.append(("direct", raw_coordinates[:num_slices]))
 
-    if len(raw_coordinates) == 2 * num_slices:
-        candidates.append(("even_frames", raw_coordinates[0::2]))
-        candidates.append(("odd_frames", raw_coordinates[1::2]))
-
-    valid_coordinates = np.array(
-        [rc for rc in raw_coordinates if is_fundus_rc(rc, fundus_height)],
-        dtype=float,
-    )
-    if len(valid_coordinates) == num_slices:
-        candidates.append(("valid_only", valid_coordinates))
+    if len(raw_coordinates) >= 2 * num_slices:
+        candidates.append(("even_frames", raw_coordinates[0::2][:num_slices]))
+        candidates.append(("odd_frames", raw_coordinates[1::2][:num_slices]))
 
     if not candidates:
         fallback = raw_coordinates[:num_slices]
         candidates.append(("fallback", fallback))
 
-    def score(candidate_coordinates):
-        valid_count = sum(
-            is_fundus_rc(reference_coordinates, fundus_height)
-            for reference_coordinates in candidate_coordinates
-        )
-        x_values = candidate_coordinates[:, [0, 2]]
-        x_span = float(np.nanmax(x_values) - np.nanmin(x_values))
-        return valid_count, x_span
-
     best_name = None
     best_coordinates = None
-    best_score = (-1, -1.0)
+    best_score = (-1, float("-inf"), float("-inf"), float("-inf"))
 
     for name, candidate in candidates:
         if len(candidate) != num_slices:
             continue
-        candidate_score = score(candidate)
+        display_candidate = transpose_tupai_reference_coordinates(candidate)
+        candidate_score = score_tupai_coordinate_sequence(
+            candidate_coordinates=display_candidate,
+            fundus_width=fundus_width,
+            fundus_height=fundus_height,
+            expected_bscan_length_pixels=expected_bscan_length_pixels,
+        )
         if candidate_score > best_score:
             best_score = candidate_score
             best_name = name
-            best_coordinates = candidate
+            best_coordinates = display_candidate
 
     if best_coordinates is None:
         raise RuntimeError("Could not match Tupai OCT frame locations to B-scan slices.")
@@ -90,50 +156,27 @@ def choose_coordinate_sequence(raw_coordinates, num_slices, fundus_height):
     return np.array(best_coordinates, dtype=float), best_name
 
 
-def split_tupai_coordinate_sequences(raw_coordinates, num_slices, fundus_height):
-    full_coordinates, full_mode = choose_coordinate_sequence(
-        raw_coordinates=raw_coordinates,
-        num_slices=num_slices,
-        fundus_height=fundus_height,
+def split_tupai_coordinate_sequences(raw_coordinates, num_slices, fundus_ds, oct_ds):
+    fundus_height = int(getattr(fundus_ds, "Rows"))
+    fundus_width = int(getattr(fundus_ds, "Columns"))
+    expected_bscan_length_pixels = compute_expected_bscan_length_pixels(
+        fundus_ds=fundus_ds,
+        oct_ds=oct_ds,
     )
 
-    segment_candidates = []
-    if len(raw_coordinates) == 2 * num_slices:
-        segment_candidates.append(("even_frames", raw_coordinates[0::2]))
-        segment_candidates.append(("odd_frames", raw_coordinates[1::2]))
-    else:
-        segment_candidates.append(("direct", raw_coordinates[:num_slices]))
-
-    best_segment_mode = None
-    best_segment_coordinates = None
-    best_segment_score = (-1.0, -1.0)
-
-    for name, candidate in segment_candidates:
-        if len(candidate) != num_slices:
-            continue
-
-        lengths = np.linalg.norm(candidate[:, 2:4] - candidate[:, 0:2], axis=1)
-        finite_lengths = lengths[np.isfinite(lengths)]
-        if len(finite_lengths) == 0:
-            continue
-
-        median_length = float(np.median(finite_lengths))
-        y_span = float(np.nanmedian(np.abs(candidate[:, 3] - candidate[:, 1])))
-        score = (median_length, y_span)
-        if score > best_segment_score:
-            best_segment_score = score
-            best_segment_mode = name
-            best_segment_coordinates = candidate
-
-    if best_segment_coordinates is None:
-        best_segment_coordinates = full_coordinates
-        best_segment_mode = full_mode
+    coordinates, coordinate_mode = choose_coordinate_sequence(
+        raw_coordinates=raw_coordinates,
+        num_slices=num_slices,
+        fundus_width=fundus_width,
+        fundus_height=fundus_height,
+        expected_bscan_length_pixels=expected_bscan_length_pixels,
+    )
 
     return (
-        np.array(full_coordinates, dtype=float),
-        full_mode,
-        np.array(best_segment_coordinates, dtype=float),
-        best_segment_mode,
+        np.array(coordinates, dtype=float),
+        coordinate_mode,
+        np.array(coordinates, dtype=float),
+        coordinate_mode,
     )
 
 
@@ -201,7 +244,8 @@ def load_tupai_data(input_dir):
     ) = split_tupai_coordinate_sequences(
         raw_coordinates=raw_coordinates,
         num_slices=num_slices,
-        fundus_height=fundus_height,
+        fundus_ds=ds_fundus,
+        oct_ds=ds_bscan,
     )
     scan_band_width_pixels = compute_scan_band_width_pixels(
         ds_fundus,

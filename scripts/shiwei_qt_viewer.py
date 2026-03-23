@@ -181,6 +181,10 @@ class ShiweiViewerWindow(QMainWindow):
         self.show_line_checkbox.setChecked(True)
         self.show_line_checkbox.toggled.connect(self.redraw_views)
 
+        self.show_all_lines_checkbox = QCheckBox("显示全部 B-scan 线")
+        self.show_all_lines_checkbox.setChecked(True)
+        self.show_all_lines_checkbox.toggled.connect(self.redraw_views)
+
         self.show_contours_checkbox = QCheckBox("显示分割曲线")
         self.show_contours_checkbox.setChecked(True)
         self.show_contours_checkbox.toggled.connect(self.redraw_views)
@@ -211,7 +215,7 @@ class ShiweiViewerWindow(QMainWindow):
         self.geometry_info_value = QLabel("-")
 
         self.legend_label = QLabel(
-            "图例：红线=当前 B-scan 在 Fundus 上的位置；彩色线=分割层；"
+            "图例：金色线=其他 B-scan 定位；红线=当前 B-scan 在 Fundus 上的位置；彩色线=分割层；"
             "亮度/对比度仅作用于右侧 B-scan 显示。"
         )
         self.legend_label.setWordWrap(True)
@@ -371,6 +375,7 @@ class ShiweiViewerWindow(QMainWindow):
         display_group = QGroupBox("显示设置")
         display_layout = QFormLayout(display_group)
         display_layout.addRow(self.show_line_checkbox)
+        display_layout.addRow(self.show_all_lines_checkbox)
         display_layout.addRow(self.show_contours_checkbox)
         display_layout.addRow("曲线线宽", self.line_width_spin)
         display_layout.addRow("B-scan 对比度", self.contrast_slider)
@@ -504,6 +509,7 @@ class ShiweiViewerWindow(QMainWindow):
 
     def reset_display_controls(self):
         self.show_line_checkbox.setChecked(True)
+        self.show_all_lines_checkbox.setChecked(True)
         self.show_contours_checkbox.setChecked(True)
         self.line_width_spin.setValue(1)
         self.contrast_slider.setValue(100)
@@ -644,6 +650,22 @@ class ShiweiViewerWindow(QMainWindow):
             self.canvas.ax_fundus.imshow(display_fundus, origin="upper")
         self.canvas.ax_fundus.set_title("Fundus / CSSO", color="#E5E7EB")
         self.canvas.ax_fundus.axis("off")
+
+        if self.show_all_lines_checkbox.isChecked() and self.coordinates:
+            line_step = max(1, len(self.coordinates) // 96)
+            for line_index, line_coords in enumerate(self.coordinates):
+                if line_index == slice_idx or line_index % line_step != 0:
+                    continue
+                line_coords = np.asarray(line_coords, dtype=float)
+                if line_coords.size != 4 or not np.any(line_coords):
+                    continue
+                self.canvas.ax_fundus.plot(
+                    [line_coords[0], line_coords[2]],
+                    [line_coords[1], line_coords[3]],
+                    color="#FBBF24",
+                    linewidth=0.8,
+                    alpha=0.35,
+                )
 
         coords = np.asarray(self.coordinates[slice_idx], dtype=float)
         if self.show_line_checkbox.isChecked() and coords.size == 4 and np.any(coords):

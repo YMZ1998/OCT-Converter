@@ -96,7 +96,7 @@
 
     .layout {
       display: grid;
-      grid-template-columns: 320px 1fr 360px;
+      grid-template-columns: 300px 1fr;
       gap: 16px;
       padding: 16px;
       min-height: 0;
@@ -137,15 +137,33 @@
     .kv div:nth-child(odd) { color: var(--muted); }
     .viewer-wrap { display: grid; grid-template-rows: auto 1fr auto; gap: 12px; height: 100%; }
     .viewer-toolbar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    .viewer-controls { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .viewer-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
     .control { display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--muted); }
+    .compare-view {
+      display: grid;
+      grid-template-columns: minmax(220px, 0.72fr) minmax(520px, 1.28fr);
+      gap: 10px;
+      min-height: 0;
+      align-items: stretch;
+    }
+
+    .view-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 0;
+      min-width: 0;
+    }
+
+    .view-title { font-size: 13px; color: var(--muted); font-weight: 600; }
+    .view-hint { display: none !important; min-height: 0; }
 
     .canvas-stage {
       position: relative;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 12px;
+      padding: 10px;
       background:
         linear-gradient(45deg, rgba(255,255,255,0.02) 25%, transparent 25%, transparent 75%, rgba(255,255,255,0.02) 75%),
         linear-gradient(45deg, rgba(255,255,255,0.02) 25%, transparent 25%, transparent 75%, rgba(255,255,255,0.02) 75%),
@@ -155,8 +173,17 @@
       border: 1px solid var(--border);
       border-radius: 14px;
       overflow: hidden;
-      min-height: 260px;
-      max-height: min(68vh, 720px);
+      min-height: clamp(300px, 54vh, 620px);
+      max-height: clamp(320px, 64vh, 720px);
+      flex: 1 1 auto;
+      width: 100%;
+    }
+
+    #fundusStage { cursor: crosshair; }
+    #stage {
+      padding: 4px;
+      min-height: clamp(280px, 56vh, 680px);
+      max-height: clamp(320px, 70vh, 760px);
     }
 
     canvas {
@@ -209,15 +236,16 @@
     }
 
     .hint { font-size: 12px; color: var(--muted); }
+    .panel.side-right { display: none; }
 
     @media (max-width: 1280px) {
       .layout { grid-template-columns: 280px 1fr; }
-      .panel.side-right { grid-column: 1 / -1; }
+      .compare-view { grid-template-columns: minmax(220px, 0.76fr) minmax(420px, 1.24fr); }
     }
 
     @media (max-width: 900px) {
       .layout { grid-template-columns: 1fr; }
-      .viewer-toolbar, .viewer-controls { grid-template-columns: 1fr; }
+      .viewer-toolbar, .viewer-controls, .compare-view { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -279,12 +307,28 @@
                 <button id="playButton" class="secondary">播放</button>
                 <button id="nextButton" class="secondary">下一张</button>
                 <button id="overlayButton" class="secondary">轮廓开</button>
+                <button id="infoButton" class="secondary" hidden>提示开</button>
               </div>
             </div>
 
-            <div class="canvas-stage" id="stage">
+            <div class="compare-view">
+              <div class="view-panel">
+                <div class="view-title" id="fundusViewTitle">定位图 / Fundus</div>
+                <div class="hint view-hint" id="fundusViewHint">左侧显示定位图，点击定位线可跳转到对应切片。</div>
+                <div class="canvas-stage" id="fundusStage">
+                  <canvas id="fundusCanvas" width="1024" height="1024"></canvas>
+                  <div id="fundusEmptyState" class="empty">加载后会在这里显示定位图和扫描定位线。</div>
+                </div>
+              </div>
+
+              <div class="view-panel">
+                <div class="view-title" id="bscanViewTitle">当前 B-Scan</div>
+                <div class="hint view-hint" id="bscanViewHint">右侧显示与左侧定位线匹配的当前切片。</div>
+                <div class="canvas-stage" id="stage">
               <canvas id="octCanvas" width="1024" height="512"></canvas>
               <div id="emptyState" class="empty">加载后会在这里显示 OCT 切片。</div>
+                </div>
+              </div>
             </div>
 
             <div class="viewer-controls">
@@ -339,6 +383,7 @@
       brightness: 0,
       speed: 5,
       overlay: true,
+      showInfo: true,
       lastPath: "",
     };
 
@@ -348,12 +393,16 @@
       fundusIndex: 0,
       sliceIndex: 0,
       overlay: true,
+      showInfo: true,
       playing: false,
       busy: false,
       timer: null,
       renderToken: 0,
       canvasNaturalWidth: 1024,
       canvasNaturalHeight: 512,
+      bscanCrop: null,
+      fundusNaturalWidth: 1024,
+      fundusNaturalHeight: 1024,
     };
 
     const elements = {
@@ -377,6 +426,7 @@
       playButton: document.getElementById("playButton"),
       nextButton: document.getElementById("nextButton"),
       overlayButton: document.getElementById("overlayButton"),
+      infoButton: document.getElementById("infoButton"),
       contrastSlider: document.getElementById("contrastSlider"),
       brightnessSlider: document.getElementById("brightnessSlider"),
       speedSlider: document.getElementById("speedSlider"),
@@ -384,14 +434,22 @@
       brightnessLabel: document.getElementById("brightnessLabel"),
       speedLabel: document.getElementById("speedLabel"),
       contourNames: document.getElementById("contourNames"),
+      fundusViewTitle: document.getElementById("fundusViewTitle"),
+      fundusViewHint: document.getElementById("fundusViewHint"),
+      bscanViewTitle: document.getElementById("bscanViewTitle"),
+      bscanViewHint: document.getElementById("bscanViewHint"),
+      fundusCanvas: document.getElementById("fundusCanvas"),
       octCanvas: document.getElementById("octCanvas"),
       projectionImage: document.getElementById("projectionImage"),
       fundusImage: document.getElementById("fundusImage"),
+      fundusEmptyState: document.getElementById("fundusEmptyState"),
       emptyState: document.getElementById("emptyState"),
+      fundusStage: document.getElementById("fundusStage"),
       stage: document.getElementById("stage"),
     };
 
     const ctx = elements.octCanvas.getContext("2d");
+    const fundusCtx = elements.fundusCanvas.getContext("2d");
 
     function getUiState() {
       try {
@@ -407,6 +465,7 @@
         brightness: Number(elements.brightnessSlider.value),
         speed: Number(elements.speedSlider.value),
         overlay: state.overlay,
+        showInfo: state.showInfo,
         lastPath: elements.pathInput.value.trim(),
       };
       localStorage.setItem(STORAGE_KEYS.uiState, JSON.stringify(payload));
@@ -504,6 +563,7 @@
       elements.brightnessLabel.textContent = `${elements.brightnessSlider.value}`;
       elements.speedLabel.textContent = `${elements.speedSlider.value} FPS`;
       elements.overlayButton.textContent = state.overlay ? "轮廓开" : "轮廓关";
+      elements.infoButton.textContent = state.showInfo ? "提示开" : "提示关";
       elements.contourNames.textContent = volume && volume.contourNames.length
         ? volume.contourNames.join(", ")
         : "无";
@@ -525,6 +585,117 @@
       elements.fundusSelect.value = String(Math.min(state.fundusIndex, Math.max(0, fundusImages.length - 1)));
     }
 
+    function updateViewInfo() {
+      const volume = currentVolume();
+      const hintDisplay = state.showInfo ? "" : "none";
+      elements.fundusViewHint.style.display = hintDisplay;
+      elements.bscanViewHint.style.display = hintDisplay;
+      if (!volume) {
+        elements.fundusViewTitle.textContent = "定位图 / Fundus";
+        elements.fundusViewHint.textContent = "左侧显示定位图，红线对应当前切片。";
+        elements.bscanViewTitle.textContent = "当前 B-Scan";
+        elements.bscanViewHint.textContent = "右侧显示与左侧定位线匹配的当前切片。";
+        return;
+      }
+
+      const sliceNumber = state.sliceIndex + 1;
+      const segmentCount = Array.isArray(volume.overlaySegments) ? volume.overlaySegments.length : 0;
+      const isSquareRaster = volume.projectionMode === "square-raster-default";
+
+      elements.fundusViewTitle.textContent = volume.matchedFundusLabel || "定位图 / Fundus";
+
+      if (volume.overlayWarning) {
+        elements.fundusViewHint.textContent = volume.overlayWarning;
+      } else if (isSquareRaster) {
+        elements.fundusViewHint.textContent = `方形扫描区域近似定位，红线为当前 B-scan（第 ${sliceNumber} / ${volume.sliceCount} 条）。`;
+      } else if (volume.overlayMode === "e2e-metadata") {
+        elements.fundusViewHint.textContent = `定位线已与 B-scan 匹配，当前为第 ${sliceNumber} / ${volume.sliceCount} 条。`;
+      } else {
+        elements.fundusViewHint.textContent = `当前定位线：第 ${sliceNumber} / ${Math.max(segmentCount, volume.sliceCount)} 条，点击左图可快速切换。`;
+      }
+
+      elements.bscanViewTitle.textContent = volume.label || "当前 B-Scan";
+      elements.bscanViewHint.textContent = isSquareRaster
+        ? `当前扫描线：${sliceNumber} / ${volume.sliceCount}`
+        : `Slice ${sliceNumber} / ${volume.sliceCount}`;
+    }
+
+    function getSegmentDirectionLabel(segment) {
+      const angle = Math.abs(Number(segment?.angleDegrees ?? 0)) % 180;
+      if (angle <= 15 || angle >= 165) return "??";
+      if (Math.abs(angle - 90) <= 15) return "??";
+      return angle < 90 ? "???" : "???";
+    }
+
+    function getOverlayDisplayMode(volume) {
+      const projectionMode = String(volume?.projectionMode || "");
+      if (projectionMode.endsWith("-rect") || projectionMode.includes("square-raster")) {
+        return "box";
+      }
+      if (projectionMode.endsWith("-line")) {
+        return "single-line";
+      }
+
+      const segments = Array.isArray(volume?.overlaySegments) ? volume.overlaySegments : [];
+      if (segments.length < 2) {
+        return "single-line";
+      }
+
+      const angles = segments
+        .map((segment) => Math.abs(Number(segment?.angleDegrees ?? 0)) % 180)
+        .filter((value) => Number.isFinite(value));
+      if (!angles.length) {
+        return "single-line";
+      }
+
+      const angleSpread = Math.max(...angles) - Math.min(...angles);
+      if (angleSpread > 25) {
+        return "radial";
+      }
+      return "multi-line";
+    }
+
+    function updateViewInfo() {
+      const volume = currentVolume();
+      const hintDisplay = state.showInfo ? "" : "none";
+      elements.fundusViewHint.style.display = hintDisplay;
+      elements.bscanViewHint.style.display = hintDisplay;
+      if (!volume) {
+        elements.fundusViewTitle.textContent = "??? / Fundus";
+        elements.fundusViewHint.textContent = "????????????????????";
+        elements.bscanViewTitle.textContent = "?? B-Scan";
+        elements.bscanViewHint.textContent = "?????????????????";
+        return;
+      }
+
+      const sliceNumber = state.sliceIndex + 1;
+      const segmentCount = Array.isArray(volume.overlaySegments) ? volume.overlaySegments.length : 0;
+      const displayMode = getOverlayDisplayMode(volume);
+      const currentSegment = Array.isArray(volume.overlaySegments) ? volume.overlaySegments[state.sliceIndex] : null;
+      const directionLabel = getSegmentDirectionLabel(currentSegment);
+
+      elements.fundusViewTitle.textContent = volume.matchedFundusLabel || "??? / Fundus";
+
+      if (volume.overlayWarning) {
+        elements.fundusViewHint.textContent = volume.overlayWarning;
+      } else if (displayMode === "box") {
+        elements.fundusViewHint.textContent = `???????????????? B-scan?? ${sliceNumber} / ${volume.sliceCount} ???`;
+      } else if (displayMode === "radial") {
+        elements.fundusViewHint.textContent = `???????????????????? ${sliceNumber} / ${volume.sliceCount} ??`;
+      } else if (displayMode === "single-line") {
+        elements.fundusViewHint.textContent = `???${directionLabel}?????????? B-scan?`;
+      } else if (volume.overlayMode === "e2e-metadata") {
+        elements.fundusViewHint.textContent = `??????? B-scan ????????? ${sliceNumber} / ${volume.sliceCount} ??`;
+      } else {
+        elements.fundusViewHint.textContent = `??????????????????? ${sliceNumber} / ${Math.max(segmentCount, volume.sliceCount)} ??`;
+      }
+
+      elements.bscanViewTitle.textContent = volume.label || "?? B-Scan";
+      elements.bscanViewHint.textContent = displayMode === "box"
+        ? `?????? B-scan?${sliceNumber} / ${volume.sliceCount}`
+        : `Slice ${sliceNumber} / ${volume.sliceCount}`;
+    }
+
     function renderState() {
       const loaded = Boolean(state.data?.loaded);
       const volume = currentVolume();
@@ -540,6 +711,7 @@
       elements.nextButton.disabled = !volume;
       elements.playButton.disabled = !volume;
       elements.overlayButton.disabled = !volume;
+      elements.infoButton.disabled = !volume;
       elements.sliceSlider.max = volume ? String(Math.max(0, volume.sliceCount - 1)) : "0";
       elements.sliceSlider.value = volume ? String(Math.min(state.sliceIndex, volume.sliceCount - 1)) : "0";
       elements.emptyState.style.display = volume ? "none" : "block";
@@ -655,8 +827,87 @@
       }
     }
 
+    function getDefaultBscanCrop() {
+      return {
+        left: 0,
+        top: 0,
+        width: state.canvasNaturalWidth || 1024,
+        height: state.canvasNaturalHeight || 512,
+        originalWidth: state.canvasNaturalWidth || 1024,
+        originalHeight: state.canvasNaturalHeight || 512,
+      };
+    }
+
+    function computeBscanCrop(drawable, width, height) {
+      const tempCanvas = document.createElement("canvas");
+      tempCanvas.width = width;
+      tempCanvas.height = height;
+      const tempCtx = tempCanvas.getContext("2d", { willReadFrequently: true });
+      if (!tempCtx) {
+        return { left: 0, top: 0, width, height, originalWidth: width, originalHeight: height };
+      }
+
+      tempCtx.drawImage(drawable, 0, 0, width, height);
+      const imageData = tempCtx.getImageData(0, 0, width, height).data;
+      const rowCounts = new Uint32Array(height);
+      const colCounts = new Uint32Array(width);
+      const threshold = 14;
+
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const offset = ((y * width) + x) * 4;
+          const value = Math.max(imageData[offset], imageData[offset + 1], imageData[offset + 2]);
+          if (value > threshold) {
+            rowCounts[y] += 1;
+            colCounts[x] += 1;
+          }
+        }
+      }
+
+      const rowThreshold = Math.max(3, Math.round(width * 0.015));
+      const colThreshold = Math.max(3, Math.round(height * 0.02));
+
+      let top = 0;
+      while (top < height && rowCounts[top] < rowThreshold) top += 1;
+      let bottom = height - 1;
+      while (bottom > top && rowCounts[bottom] < rowThreshold) bottom -= 1;
+      let left = 0;
+      while (left < width && colCounts[left] < colThreshold) left += 1;
+      let right = width - 1;
+      while (right > left && colCounts[right] < colThreshold) right -= 1;
+
+      if (left >= right || top >= bottom) {
+        return { left: 0, top: 0, width, height, originalWidth: width, originalHeight: height };
+      }
+
+      const padX = Math.max(6, Math.round((right - left + 1) * 0.03));
+      const padY = Math.max(10, Math.round((bottom - top + 1) * 0.08));
+      left = Math.max(0, left - padX);
+      right = Math.min(width - 1, right + padX);
+      top = Math.max(0, top - padY);
+      bottom = Math.min(height - 1, bottom + padY);
+
+      const cropWidth = right - left + 1;
+      const cropHeight = bottom - top + 1;
+      if (cropWidth < width * 0.2 || cropHeight < height * 0.15) {
+        return { left: 0, top: 0, width, height, originalWidth: width, originalHeight: height };
+      }
+
+      return {
+        left,
+        top,
+        width: cropWidth,
+        height: cropHeight,
+        originalWidth: width,
+        originalHeight: height,
+      };
+    }
+
     function drawContours(contours, width, height) {
       const colors = ["#38bdf8", "#22c55e", "#f97316", "#f43f5e", "#a78bfa", "#facc15"];
+      const crop = state.bscanCrop || getDefaultBscanCrop();
+      const targetWidth = elements.octCanvas.width;
+      const targetHeight = elements.octCanvas.height;
       const names = Object.keys(contours);
       names.forEach((name, index) => {
         const values = contours[name];
@@ -670,8 +921,19 @@
             started = false;
             return;
           }
-          const x = (xIndex / Math.max(values.length - 1, 1)) * Math.max(width - 1, 1);
-          const y = Math.max(0, Math.min(height - 1, Number(yValue)));
+          const sourceX = (xIndex / Math.max(values.length - 1, 1)) * Math.max(width - 1, 1);
+          const sourceY = Number(yValue);
+          if (
+            sourceX < crop.left
+            || sourceX > (crop.left + crop.width - 1)
+            || sourceY < crop.top
+            || sourceY > (crop.top + crop.height - 1)
+          ) {
+            started = false;
+            return;
+          }
+          const x = ((sourceX - crop.left) / Math.max(crop.width - 1, 1)) * Math.max(targetWidth - 1, 1);
+          const y = ((sourceY - crop.top) / Math.max(crop.height - 1, 1)) * Math.max(targetHeight - 1, 1);
           if (!started) {
             ctx.moveTo(x, y);
             started = true;
@@ -688,6 +950,380 @@
       if (renderDebounce) window.clearTimeout(renderDebounce);
       renderDebounce = window.setTimeout(() => {
         drawCurrentSlice().catch((error) => setStatus(error.message, true));
+      }, 80);
+    }
+
+    function renderSelectors() {
+      const volumes = state.data?.volumes || [];
+      const volume = currentVolume();
+
+      elements.volumeSelect.innerHTML = volumes.length
+        ? volumes.map((item, index) => `<option value="${index}">${item.label}</option>`).join("")
+        : `<option value="0">No Volume</option>`;
+
+      const matchedLabel = volume?.matchedFundusLabel || "Auto matched / Projection";
+      elements.fundusSelect.innerHTML = `<option value="${Math.max(0, state.fundusIndex)}">${matchedLabel}</option>`;
+
+      elements.volumeSelect.value = String(Math.min(state.volumeIndex, Math.max(0, volumes.length - 1)));
+      elements.fundusSelect.value = String(Math.max(0, state.fundusIndex));
+      elements.fundusSelect.disabled = true;
+    }
+
+
+    function renderState() {
+      const loaded = Boolean(state.data?.loaded);
+      const volume = currentVolume();
+
+      elements.readerValue.textContent = loaded ? state.data.reader : "-";
+      elements.pathValue.textContent = loaded ? state.data.sourcePath : "-";
+      elements.volumeCountValue.textContent = String(state.data?.volumes?.length || 0);
+      elements.fundusCountValue.textContent = String(state.data?.fundusImages?.length || 0);
+      elements.volumeBadge.textContent = volume ? `${volume.width} × ${volume.height} · ${volume.sliceCount} slices` : "未加载";
+      elements.sliceSlider.disabled = !volume;
+      elements.prevButton.disabled = !volume;
+      elements.nextButton.disabled = !volume;
+      elements.playButton.disabled = !volume;
+      elements.overlayButton.disabled = !volume;
+      elements.sliceSlider.max = volume ? String(Math.max(0, volume.sliceCount - 1)) : "0";
+      elements.sliceSlider.value = volume ? String(Math.min(state.sliceIndex, volume.sliceCount - 1)) : "0";
+      elements.fundusEmptyState.style.display = volume ? "none" : "block";
+      elements.emptyState.style.display = volume ? "none" : "block";
+      renderSelectors();
+      updateLabels();
+      updateViewInfo();
+      fitCanvasDisplays();
+    }
+
+    function fitCanvasToStage({ canvas, stage, logicalWidth, logicalHeight, minWidth = 120, minHeight = 180 }) {
+      const safeLogicalWidth = Math.max(1, logicalWidth || canvas.width || 1);
+      const safeLogicalHeight = Math.max(1, logicalHeight || canvas.height || 1);
+      const stageRect = stage.getBoundingClientRect();
+      const stageStyle = window.getComputedStyle(stage);
+      const padX = (parseFloat(stageStyle.paddingLeft) || 0) + (parseFloat(stageStyle.paddingRight) || 0);
+      const padY = (parseFloat(stageStyle.paddingTop) || 0) + (parseFloat(stageStyle.paddingBottom) || 0);
+      const maxWidth = Math.max(minWidth, stageRect.width - padX);
+      const maxHeight = Math.max(minHeight, stageRect.height - padY);
+      const scale = Math.min(maxWidth / safeLogicalWidth, maxHeight / safeLogicalHeight);
+      canvas.style.width = `${Math.max(1, Math.round(safeLogicalWidth * scale))}px`;
+      canvas.style.height = `${Math.max(1, Math.round(safeLogicalHeight * scale))}px`;
+    }
+
+    function fitCanvasDisplays() {
+      const volume = currentVolume();
+      const crop = state.bscanCrop || {
+        left: 0,
+        top: 0,
+        width: state.canvasNaturalWidth || 1024,
+        height: state.canvasNaturalHeight || 512,
+        originalWidth: state.canvasNaturalWidth || 1024,
+        originalHeight: state.canvasNaturalHeight || 512,
+      };
+      const widthScale = (volume?.displayWidthUnits || crop.originalWidth || 1) / Math.max(crop.originalWidth || 1, 1);
+      const heightScale = (volume?.displayHeightUnits || crop.originalHeight || 1) / Math.max(crop.originalHeight || 1, 1);
+      fitCanvasToStage({
+        canvas: elements.octCanvas,
+        stage: elements.stage,
+        logicalWidth: crop.width * widthScale,
+        logicalHeight: crop.height * heightScale,
+      });
+      fitCanvasToStage({
+        canvas: elements.fundusCanvas,
+        stage: elements.fundusStage,
+        logicalWidth: state.fundusNaturalWidth || 1024,
+        logicalHeight: state.fundusNaturalHeight || 1024,
+        minWidth: 180,
+        minHeight: 180,
+      });
+    }
+
+    function fitCanvasDisplay() {
+      fitCanvasDisplays();
+    }
+
+    async function loadDrawable(url, fallbackWidth, fallbackHeight, errorPrefix) {
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) {
+        const contentType = response.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
+          const payload = await response.json();
+          throw new Error(payload.error || errorPrefix);
+        }
+        throw new Error(`${errorPrefix}：HTTP ${response.status}`);
+      }
+
+      const blob = await response.blob();
+      if (window.createImageBitmap) {
+        const bitmap = await createImageBitmap(blob);
+        return {
+          drawable: bitmap,
+          naturalWidth: bitmap.width || fallbackWidth,
+          naturalHeight: bitmap.height || fallbackHeight,
+          cleanup: () => bitmap.close(),
+        };
+      }
+
+      const imageUrl = URL.createObjectURL(blob);
+      const image = new Image();
+      image.decoding = "async";
+      image.src = imageUrl;
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = () => reject(new Error(errorPrefix));
+      });
+      return {
+        drawable: image,
+        naturalWidth: image.naturalWidth || fallbackWidth,
+        naturalHeight: image.naturalHeight || fallbackHeight,
+        cleanup: () => URL.revokeObjectURL(imageUrl),
+      };
+    }
+
+    function drawSegment(ctx2d, segment, options = {}) {
+      const start = segment?.start;
+      const end = segment?.end;
+      if (!Array.isArray(start) || !Array.isArray(end) || start.length < 2 || end.length < 2) {
+        return;
+      }
+
+      const lineWidth = options.lineWidth || 1.5;
+      ctx2d.save();
+      ctx2d.beginPath();
+      ctx2d.lineWidth = lineWidth;
+      ctx2d.strokeStyle = options.strokeStyle || "rgba(56, 189, 248, 0.24)";
+      if (options.dash) {
+        ctx2d.setLineDash(options.dash);
+      }
+      ctx2d.moveTo(Number(start[0]), Number(start[1]));
+      ctx2d.lineTo(Number(end[0]), Number(end[1]));
+      ctx2d.stroke();
+
+      if (options.showEndpoints) {
+        const radius = Math.max(2, lineWidth * 1.3);
+        ctx2d.fillStyle = options.endpointColor || options.strokeStyle || "#f87171";
+        ctx2d.beginPath();
+        ctx2d.arc(Number(start[0]), Number(start[1]), radius, 0, Math.PI * 2);
+        ctx2d.arc(Number(end[0]), Number(end[1]), radius, 0, Math.PI * 2);
+        ctx2d.fill();
+      }
+      ctx2d.restore();
+    }
+
+    function drawFundusOverlay(volume) {
+      const segments = Array.isArray(volume?.overlaySegments) ? volume.overlaySegments : [];
+      if (!segments.length) return;
+
+      const segmentCount = Math.min(volume?.sliceCount || segments.length, segments.length);
+      const activeIndex = Math.max(0, Math.min(state.sliceIndex, Math.max(0, segmentCount - 1)));
+      const baseLineWidth = Math.max(1.25, Math.min(elements.fundusCanvas.width, elements.fundusCanvas.height) / 480);
+      const displayMode = getOverlayDisplayMode(volume);
+      const activeSegment = segments[activeIndex];
+      if (!activeSegment) return;
+
+      if (displayMode === "box" && Array.isArray(volume?.overlayBounds) && volume.overlayBounds.length === 4) {
+        const [left, top, boxWidth, boxHeight] = volume.overlayBounds.map((value) => Number(value));
+        fundusCtx.save();
+        fundusCtx.strokeStyle = "rgba(56, 189, 248, 0.95)";
+        fundusCtx.lineWidth = baseLineWidth * 1.4;
+        fundusCtx.strokeRect(left, top, boxWidth, boxHeight);
+        fundusCtx.restore();
+      } else if (displayMode === "radial" || displayMode === "multi-line") {
+        for (let index = 0; index < segmentCount; index += 1) {
+          drawSegment(fundusCtx, segments[index], {
+            lineWidth: baseLineWidth,
+            strokeStyle: index === activeIndex ? "rgba(248, 113, 113, 0.98)" : "rgba(56, 189, 248, 0.42)",
+          });
+        }
+      }
+
+      if (displayMode === "single-line") {
+        drawSegment(fundusCtx, activeSegment, {
+          lineWidth: baseLineWidth * 1.25,
+          strokeStyle: "rgba(56, 189, 248, 0.4)",
+        });
+      }
+
+      drawSegment(fundusCtx, activeSegment, {
+        lineWidth: baseLineWidth * 1.9,
+        strokeStyle: "rgba(248, 113, 113, 0.98)",
+        showEndpoints: true,
+        endpointColor: "#fde68a",
+      });
+
+      const labelX = (Number(activeSegment.start[0]) + Number(activeSegment.end[0])) / 2;
+      const labelY = (Number(activeSegment.start[1]) + Number(activeSegment.end[1])) / 2;
+      fundusCtx.save();
+      fundusCtx.font = `${Math.max(12, Math.round(baseLineWidth * 7))}px "Segoe UI", sans-serif`;
+      fundusCtx.fillStyle = "#f8fafc";
+      fundusCtx.strokeStyle = "rgba(2, 6, 23, 0.75)";
+      fundusCtx.lineWidth = 3;
+      fundusCtx.strokeText(`B${activeIndex + 1}`, labelX + 10, labelY - 10);
+      fundusCtx.fillText(`B${activeIndex + 1}`, labelX + 10, labelY - 10);
+      fundusCtx.restore();
+    }
+
+    function pointToCanvas(event, canvas) {
+      const rect = canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      const x = ((event.clientX - rect.left) / rect.width) * canvas.width;
+      const y = ((event.clientY - rect.top) / rect.height) * canvas.height;
+      if (x < 0 || y < 0 || x > canvas.width || y > canvas.height) {
+        return null;
+      }
+      return [x, y];
+    }
+
+    function distanceToSegment(point, segment) {
+      const start = segment?.start;
+      const end = segment?.end;
+      if (!Array.isArray(start) || !Array.isArray(end) || start.length < 2 || end.length < 2) {
+        return Number.POSITIVE_INFINITY;
+      }
+
+      const px = Number(point[0]);
+      const py = Number(point[1]);
+      const x1 = Number(start[0]);
+      const y1 = Number(start[1]);
+      const x2 = Number(end[0]);
+      const y2 = Number(end[1]);
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+      if (!dx && !dy) {
+        return Math.hypot(px - x1, py - y1);
+      }
+
+      const t = Math.max(0, Math.min(1, (((px - x1) * dx) + ((py - y1) * dy)) / ((dx * dx) + (dy * dy))));
+      const nearestX = x1 + (dx * t);
+      const nearestY = y1 + (dy * t);
+      return Math.hypot(px - nearestX, py - nearestY);
+    }
+
+    function selectSliceFromFundus(event) {
+      const volume = currentVolume();
+      if (!volume) return;
+      const point = pointToCanvas(event, elements.fundusCanvas);
+      if (!point) return;
+
+      const segments = Array.isArray(volume.overlaySegments) ? volume.overlaySegments : [];
+      const segmentCount = Math.min(volume.sliceCount || segments.length, segments.length);
+      if (!segmentCount) return;
+
+      let bestIndex = -1;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      for (let index = 0; index < segmentCount; index += 1) {
+        const distance = distanceToSegment(point, segments[index]);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIndex = index;
+        }
+      }
+
+      if (bestIndex < 0 || bestIndex === state.sliceIndex) return;
+      state.sliceIndex = bestIndex;
+      elements.sliceSlider.value = String(state.sliceIndex);
+      updateLabels();
+      updateViewInfo();
+      scheduleDraw();
+    }
+
+    async function drawFundusView(token = state.renderToken) {
+      const volume = currentVolume();
+      if (!volume) {
+        fundusCtx.clearRect(0, 0, elements.fundusCanvas.width, elements.fundusCanvas.height);
+        return;
+      }
+
+      let drawablePayload = null;
+      try {
+        drawablePayload = await loadDrawable(
+          `/api/volume/${state.volumeIndex}/fundus-view.png?ts=${Date.now()}`,
+          state.fundusNaturalWidth || 1024,
+          state.fundusNaturalHeight || 1024,
+          "定位图像加载失败",
+        );
+        if (token !== state.renderToken) return;
+
+        state.fundusNaturalWidth = drawablePayload.naturalWidth;
+        state.fundusNaturalHeight = drawablePayload.naturalHeight;
+        elements.fundusCanvas.width = state.fundusNaturalWidth;
+        elements.fundusCanvas.height = state.fundusNaturalHeight;
+        fitCanvasDisplays();
+        fundusCtx.clearRect(0, 0, elements.fundusCanvas.width, elements.fundusCanvas.height);
+        fundusCtx.drawImage(drawablePayload.drawable, 0, 0, elements.fundusCanvas.width, elements.fundusCanvas.height);
+        drawFundusOverlay(volume);
+      } finally {
+        drawablePayload?.cleanup?.();
+      }
+    }
+
+    async function drawCurrentSlice(token = ++state.renderToken) {
+      const volume = currentVolume();
+      if (!volume) {
+        state.bscanCrop = null;
+        ctx.clearRect(0, 0, elements.octCanvas.width, elements.octCanvas.height);
+        return;
+      }
+
+      let drawablePayload = null;
+      try {
+        drawablePayload = await loadDrawable(
+          `${buildSliceUrl()}&ts=${Date.now()}`,
+          volume.width,
+          volume.height,
+          "切片图像加载失败",
+        );
+        if (token !== state.renderToken) return;
+
+        state.canvasNaturalWidth = drawablePayload.naturalWidth;
+        state.canvasNaturalHeight = drawablePayload.naturalHeight;
+        state.bscanCrop = computeBscanCrop(
+          drawablePayload.drawable,
+          state.canvasNaturalWidth,
+          state.canvasNaturalHeight,
+        );
+        const crop = state.bscanCrop || getDefaultBscanCrop();
+        elements.octCanvas.width = crop.width;
+        elements.octCanvas.height = crop.height;
+        fitCanvasDisplays();
+        ctx.clearRect(0, 0, elements.octCanvas.width, elements.octCanvas.height);
+        ctx.drawImage(
+          drawablePayload.drawable,
+          crop.left,
+          crop.top,
+          crop.width,
+          crop.height,
+          0,
+          0,
+          elements.octCanvas.width,
+          elements.octCanvas.height,
+        );
+      } finally {
+        drawablePayload?.cleanup?.();
+      }
+
+      if (state.overlay && volume.contourNames.length) {
+        try {
+          const contourPayload = await fetchJson(`/api/volume/${state.volumeIndex}/contours/${state.sliceIndex}.json`);
+          if (token !== state.renderToken) return;
+          drawContours(contourPayload.contours || {}, elements.octCanvas.width, elements.octCanvas.height);
+        } catch (error) {
+          console.warn(error);
+        }
+      }
+    }
+
+    async function drawViewer() {
+      const token = ++state.renderToken;
+      updateViewInfo();
+      await Promise.all([
+        drawFundusView(token),
+        drawCurrentSlice(token),
+      ]);
+    }
+
+    function scheduleDraw() {
+      if (renderDebounce) window.clearTimeout(renderDebounce);
+      renderDebounce = window.setTimeout(() => {
+        drawViewer().catch((error) => setStatus(error.message, true));
       }, 80);
     }
 
@@ -792,7 +1428,9 @@
       elements.brightnessSlider.value = "0";
       elements.speedSlider.value = "5";
       state.overlay = true;
+      state.showInfo = true;
       updateLabels();
+      updateViewInfo();
       saveUiState();
       scheduleDraw();
     }
@@ -803,10 +1441,12 @@
       elements.brightnessSlider.value = String(persisted.brightness ?? DEFAULT_UI_STATE.brightness);
       elements.speedSlider.value = String(persisted.speed ?? DEFAULT_UI_STATE.speed);
       state.overlay = Boolean(persisted.overlay ?? DEFAULT_UI_STATE.overlay);
+      state.showInfo = Boolean(persisted.showInfo ?? DEFAULT_UI_STATE.showInfo);
       if (!elements.pathInput.value) {
         elements.pathInput.value = persisted.lastPath || "";
       }
       updateLabels();
+      updateViewInfo();
     }
 
     elements.browseButton.addEventListener("click", pickFileAndLoad);
@@ -850,6 +1490,12 @@
       saveUiState();
       scheduleDraw();
     });
+    elements.infoButton.addEventListener("click", () => {
+      state.showInfo = !state.showInfo;
+      updateLabels();
+      updateViewInfo();
+      saveUiState();
+    });
     elements.contrastSlider.addEventListener("input", () => {
       updateLabels();
       saveUiState();
@@ -873,6 +1519,12 @@
       if (event.key === "Enter") loadPath();
     });
     elements.stage.addEventListener("wheel", (event) => {
+      if (!currentVolume()) return;
+      event.preventDefault();
+      stepSlice(event.deltaY > 0 ? 1 : -1);
+    }, { passive: false });
+    elements.fundusStage.addEventListener("click", selectSliceFromFundus);
+    elements.fundusStage.addEventListener("wheel", (event) => {
       if (!currentVolume()) return;
       event.preventDefault();
       stepSlice(event.deltaY > 0 ? 1 : -1);

@@ -11,7 +11,7 @@ from matplotlib.widgets import Slider
 
 
 DEFAULT_INPUT_DIR = (
-    "E:\\Data\\OCT2\\视微OCT\\00402_20260224001_D-120001DME_OD_2026-02-11_10-11-16Cube 6x6 512x512\\Dicom"
+    "E:\\Data\\OCT2\\视微OCT\\00538_20260228005_A-031001AMD_OS_2026-03-06_11-47-06Cube 6x6 512x512\\Dicom"
 )
 
 FORMAT_ALIASES = {
