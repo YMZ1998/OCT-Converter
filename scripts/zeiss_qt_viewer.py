@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import sys
+import xml.etree.ElementTree as ET
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,6 +71,13 @@ FUNDUS_SOURCE_LABELS = {
     "projection-fallback": "体数据投影（回退）",
 }
 
+DISPLAY_MODE_LABELS = {
+    "registered-to-fundus": "显示=配准到眼底图",
+    "geometry-reference": "显示=定位参考图",
+    "geometry-reference-fallback": "显示=定位参考图回退",
+    "fundus-or-projection": "显示=眼底图/投影",
+}
+
 
 @dataclass
 class FundusCandidate:
@@ -98,9 +106,21 @@ class VolumeViewModel:
     overlay_bounds: tuple[float, float, float, float] | None
     overlay_outline: list[tuple[float, float]] | None
     overlay_spokes: list
+    photo_scan_segments: list
+    photo_overlay_bounds: tuple[float, float, float, float] | None
+    photo_overlay_outline: list[tuple[float, float]] | None
+    segmentation_surfaces: list[np.ndarray]
+    fovea_point: tuple[float, float] | None
+    photo_fovea_point: tuple[float, float] | None
+    registration_score: float | None
+    display_mode: str
+    display_reason: str | None
     metadata_text: str
     fundus_source_file: str
     fundus_source_kind: str
+    photo_fundus: np.ndarray | None
+    photo_source_file: str | None
+    photo_source_kind: str | None
 
 
 @dataclass
@@ -110,6 +130,14 @@ class ExamViewModel:
     patient_id: str
     exam_path: str
     volumes: list[VolumeViewModel]
+
+
+@dataclass
+class RawAnalysisData:
+    source_file: str
+    fovea_x_norm: float | None
+    fovea_y_norm: float | None
+    segmentation_surfaces: list[np.ndarray]
 
 
 def parse_args():
@@ -127,6 +155,8 @@ def parse_args():
 def clean_text(value: Any) -> str:
     if value is None:
         return ""
+    if hasattr(value, "value"):
+        value = value.value
     if isinstance(value, bytes):
         value = value.decode("utf-8", errors="ignore")
     text = str(value).split("\x00", 1)[0]
@@ -181,6 +211,100 @@ def derive_physical_size_mm(rows: int | None, columns: int | None, pixel_spacing
     physical_height = rows * row_spacing if row_spacing and row_spacing > 0 else None
     physical_width = columns * column_spacing if column_spacing and column_spacing > 0 else None
     return physical_width, physical_height
+
+
+def clean_xml_text(value: Any) -> str:
+    text = clean_text(value)
+    start = text.find("<?xml")
+    if start >= 0:
+        text = text[start:]
+    end = text.rfind(">")
+    if end >= 0:
+        text = text[: end + 1]
+    return text.strip()
+
+
+def extract_xml_float(root: ET.Element, path: str) -> float | None:
+    element = root.find(path)
+    if element is None or element.text is None:
+        return None
+    return parse_float(element.text)
+
+
+def parse_raw_analysis_file(path: Path) -> RawAnalysisData | None:
+    ds = safe_dcmread(path)
+    analysis_xml = clean_xml_text(ds.get((0x0073, 0x1140), ""))
+    fovea_x_norm = None
+    fovea_y_norm = None
+    if analysis_xml:
+        try:
+            xml_root = ET.fromstring(analysis_xml)
+            fovea_x_norm = extract_xml_float(xml_root, ".//FoveaCenterData/FoveaPosition/X")
+            fovea_y_norm = extract_xml_float(xml_root, ".//FoveaCenterData/FoveaPosition/Y")
+        except ET.ParseError:
+            fovea_x_norm = None
+            fovea_y_norm = None
+
+    segmentation_surfaces: list[np.ndarray] = []
+    for tag in ((0x0073, 0x1150), (0x0073, 0x1155), (0x0073, 0x1160)):
+        element = ds.get(tag)
+        if element is None:
+            continue
+        try:
+            surface = np.frombuffer(element.value, dtype=np.int16)
+        except TypeError:
+            continue
+        if surface.size == 0 or np.all(surface == 0):
+            continue
+        segmentation_surfaces.append(surface.astype(np.float32))
+
+    if not analysis_xml and not segmentation_surfaces:
+        return None
+
+    return RawAnalysisData(
+        source_file=path.name,
+        fovea_x_norm=fovea_x_norm,
+        fovea_y_norm=fovea_y_norm,
+        segmentation_surfaces=segmentation_surfaces,
+    )
+
+
+def load_exam_raw_analysis(exam_dir: Path) -> RawAnalysisData | None:
+    raw_dcm_files = sorted(exam_dir.glob("*.DCM"))
+    for path in raw_dcm_files:
+        ds = safe_dcmread(path)
+        sop_class_uid = clean_text(getattr(ds, "SOPClassUID", ""))
+        if sop_class_uid != "1.2.840.10008.5.1.4.1.1.66":
+            continue
+        analysis = parse_raw_analysis_file(path)
+        if analysis is not None:
+            return analysis
+    return None
+
+
+def reshape_segmentation_surface(surface: np.ndarray, num_slices: int, slice_width: int) -> np.ndarray | None:
+    if surface.size != num_slices * slice_width:
+        return None
+    reshaped = surface.reshape(num_slices, slice_width)
+    reshaped = np.flip(reshaped, axis=0)
+    reshaped = np.flip(reshaped, axis=1)
+    return reshaped.copy()
+
+
+def prepare_segmentation_surfaces(
+    raw_analysis: RawAnalysisData | None,
+    num_slices: int,
+    slice_width: int,
+) -> list[np.ndarray]:
+    if raw_analysis is None:
+        return []
+    reshaped: list[np.ndarray] = []
+    for surface in raw_analysis.segmentation_surfaces:
+        reshaped_surface = reshape_segmentation_surface(surface, num_slices, slice_width)
+        if reshaped_surface is not None:
+            reshaped.append(reshaped_surface)
+    reshaped.sort(key=lambda surface: float(np.nanmean(surface)))
+    return reshaped
 
 
 def classify_fundus_source_kind(
@@ -332,6 +456,8 @@ def build_reference_bounds(
     reference_physical_height_mm: float | None = None,
     scan_width_mm: float | None = None,
     scan_height_mm: float | None = None,
+    center_x_norm: float | None = None,
+    center_y_norm: float | None = None,
 ) -> tuple[float, float, float, float]:
     height, width = reference_shape[:2]
     if reference_source_kind in {"enface", "multiframe_localizer"}:
@@ -357,9 +483,25 @@ def build_reference_bounds(
         box_w = width * 0.66
         box_h = height * 0.66
 
-    x0 = max(0.0, (width - box_w) / 2.0)
-    y0 = max(0.0, (height - box_h) / 2.0)
+    center_x = float(width) * center_x_norm if center_x_norm is not None else width / 2.0
+    center_y = float(height) * center_y_norm if center_y_norm is not None else height / 2.0
+    x0 = max(0.0, min(width - box_w, center_x - box_w / 2.0))
+    y0 = max(0.0, min(height - box_h, center_y - box_h / 2.0))
     return x0, y0, float(box_w), float(box_h)
+
+
+def build_reference_point(
+    reference_shape: tuple[int, int],
+    *,
+    center_x_norm: float | None,
+    center_y_norm: float | None,
+) -> tuple[float, float] | None:
+    if center_x_norm is None or center_y_norm is None:
+        return None
+    height, width = reference_shape[:2]
+    x = float(np.clip(center_x_norm, 0.0, 1.0)) * max(width - 1, 1)
+    y = float(np.clip(center_y_norm, 0.0, 1.0)) * max(height - 1, 1)
+    return x, y
 
 
 def build_raster_segments_from_bounds(num_slices: int, bounds: tuple[float, float, float, float]) -> list[tuple[tuple[float, float], tuple[float, float]]]:
@@ -463,6 +605,8 @@ def build_raster_segments(
     fundus_physical_height_mm: float | None = None,
     scan_width_mm: float | None = None,
     scan_height_mm: float | None = None,
+    center_x_norm: float | None = None,
+    center_y_norm: float | None = None,
 ) -> tuple[list, tuple[float, float, float, float] | None]:
     if num_slices <= 0:
         return [], None
@@ -474,6 +618,8 @@ def build_raster_segments(
         reference_physical_height_mm=fundus_physical_height_mm,
         scan_width_mm=scan_width_mm,
         scan_height_mm=scan_height_mm,
+        center_x_norm=center_x_norm,
+        center_y_norm=center_y_norm,
     )
     return build_raster_segments_from_bounds(num_slices, bounds), bounds
 
@@ -658,7 +804,12 @@ def build_metadata_text(
     volume: np.ndarray,
     fundus_candidate: FundusCandidate | None,
     geometry_candidate: FundusCandidate | None,
+    display_candidate: FundusCandidate | None,
+    display_mode: str,
+    display_reason: str | None,
     registration_score: float | None,
+    raw_analysis: RawAnalysisData | None,
+    segmentation_surface_count: int,
     *,
     scan_width_mm: float | None,
     scan_height_mm: float | None,
@@ -676,13 +827,27 @@ def build_metadata_text(
         "geometry_reference_source": geometry_candidate.source_file if geometry_candidate else None,
         "geometry_reference_kind": geometry_candidate.source_kind if geometry_candidate else None,
         "geometry_reference_kind_label": describe_fundus_source_kind(geometry_candidate.source_kind) if geometry_candidate else None,
+        "display_source": display_candidate.source_file if display_candidate else "projection-fallback",
+        "display_kind": display_candidate.source_kind if display_candidate else "projection-fallback",
+        "display_kind_label": describe_fundus_source_kind(display_candidate.source_kind) if display_candidate else describe_fundus_source_kind("projection-fallback"),
+        "display_mode": display_mode,
+        "display_mode_label": DISPLAY_MODE_LABELS.get(display_mode, display_mode),
+        "display_reason": display_reason,
         "registration_score": registration_score,
+        "raw_analysis_source": raw_analysis.source_file if raw_analysis else None,
+        "fovea_center_norm": (
+            [raw_analysis.fovea_x_norm, raw_analysis.fovea_y_norm]
+            if raw_analysis and raw_analysis.fovea_x_norm is not None and raw_analysis.fovea_y_norm is not None
+            else None
+        ),
+        "segmentation_surface_count": segmentation_surface_count,
         "fundus_physical_width_mm": fundus_candidate.physical_width_mm if fundus_candidate else None,
         "fundus_physical_height_mm": fundus_candidate.physical_height_mm if fundus_candidate else None,
+        "fundus_photo_available": fundus_candidate is not None,
         "scan_width_mm": scan_width_mm,
         "scan_height_mm": scan_height_mm,
-        "overlay_note": "优先使用 OCT enface/localizer 与眼底图做仿射配准；失败时退回像素间距估算。",
-        "bscan_guides": "B-scan 引导线为启发式估计结果。",
+        "overlay_note": "优先使用 OCT enface/localizer 与眼底图做仿射配准；配准分数低于 0.20 时改为直接显示定位参考图，避免错误映射。",
+        "bscan_guides": "优先显示 Raw Data 中解析出的真实分层；缺失时才使用启发式辅助线。",
     }
     return json.dumps(metadata, indent=2, ensure_ascii=False)
 
@@ -691,6 +856,7 @@ def load_exam(exam_dir: Path) -> ExamViewModel:
     dcm_files = sorted(exam_dir.glob("*.DCM"))
     if not dcm_files:
         raise RuntimeError(f"在 {exam_dir} 下没有找到 DCM 文件。")
+    raw_analysis = load_exam_raw_analysis(exam_dir)
 
     dicomdir_path = exam_dir / "DICOMDIR"
     patient_id = ""
@@ -821,6 +987,29 @@ def load_exam(exam_dir: Path) -> ExamViewModel:
             series_instance_uid=item["series_instance_uid"],
         )
         geometry_image = geometry_candidate.image if geometry_candidate is not None else displayed_fundus
+        display_source_candidate = best_fundus
+        photo_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+        photo_bounds: tuple[float, float, float, float] | None = None
+        photo_outline: list[tuple[float, float]] | None = None
+        photo_fovea_point: tuple[float, float] | None = None
+        if best_fundus is not None:
+            photo_segments, photo_bounds = build_raster_segments(
+                item["volume"].shape[0],
+                best_fundus.image.shape,
+                fundus_source_kind=best_fundus.source_kind,
+                fundus_physical_width_mm=best_fundus.physical_width_mm,
+                fundus_physical_height_mm=best_fundus.physical_height_mm,
+                scan_width_mm=item["scan_width_mm"],
+                scan_height_mm=item["scan_height_mm"],
+                center_x_norm=raw_analysis.fovea_x_norm if raw_analysis else None,
+                center_y_norm=raw_analysis.fovea_y_norm if raw_analysis else None,
+            )
+            photo_outline = build_overlay_outline(photo_bounds)
+            photo_fovea_point = build_reference_point(
+                best_fundus.image.shape,
+                center_x_norm=raw_analysis.fovea_x_norm if raw_analysis else None,
+                center_y_norm=raw_analysis.fovea_y_norm if raw_analysis else None,
+            )
         segments, bounds = build_raster_segments(
             item["volume"].shape[0],
             geometry_image.shape,
@@ -829,11 +1018,20 @@ def load_exam(exam_dir: Path) -> ExamViewModel:
             fundus_physical_height_mm=geometry_candidate.physical_height_mm if geometry_candidate else (best_fundus.physical_height_mm if best_fundus else None),
             scan_width_mm=item["scan_width_mm"],
             scan_height_mm=item["scan_height_mm"],
+            center_x_norm=raw_analysis.fovea_x_norm if raw_analysis else None,
+            center_y_norm=raw_analysis.fovea_y_norm if raw_analysis else None,
         )
         outline = build_overlay_outline(bounds)
         spokes = build_overlay_spokes(bounds)
+        fovea_point = build_reference_point(
+            geometry_image.shape,
+            center_x_norm=raw_analysis.fovea_x_norm if raw_analysis else None,
+            center_y_norm=raw_analysis.fovea_y_norm if raw_analysis else None,
+        )
         registration_score = 1.0
         transform = None
+        display_mode = "fundus-or-projection"
+        display_reason = None
         if geometry_candidate is not None and best_fundus is not None:
             same_image = (
                 geometry_candidate.source_file == best_fundus.source_file
@@ -843,7 +1041,7 @@ def load_exam(exam_dir: Path) -> ExamViewModel:
             )
             if not same_image:
                 transform, registration_score = register_reference_to_fundus(geometry_candidate.image, best_fundus.image)
-        if transform is not None:
+        if transform is not None and registration_score is not None and registration_score >= 0.20:
             segments = warp_segments(segments, transform)
             spokes = warp_segments(spokes, transform)
             if outline is not None:
@@ -851,7 +1049,34 @@ def load_exam(exam_dir: Path) -> ExamViewModel:
                 xs = [point[0] for point in outline]
                 ys = [point[1] for point in outline]
                 bounds = (min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
-        fundus_image = displayed_fundus
+            if fovea_point is not None:
+                fovea_point = warp_points([fovea_point], transform)[0]
+            fundus_image = displayed_fundus
+            display_mode = "registered-to-fundus"
+            photo_segments = segments
+            photo_bounds = bounds
+            photo_outline = outline
+            photo_fovea_point = fovea_point
+        else:
+            fundus_image = geometry_image
+            if geometry_candidate is not None:
+                display_source_candidate = geometry_candidate
+                display_mode = "geometry-reference"
+                if best_fundus is not None and best_fundus.source_file != geometry_candidate.source_file:
+                    display_mode = "geometry-reference-fallback"
+                    if registration_score is None:
+                        display_reason = "无法稳定完成 OCT 定位参考图到眼底照片的自动配准，已回退到定位参考图。"
+                    else:
+                        display_reason = (
+                            f"OCT 定位参考图到眼底照片的配准分数过低（{registration_score:.3f} < 0.20），"
+                            "已回退到定位参考图。"
+                        )
+
+        segmentation_surfaces = prepare_segmentation_surfaces(
+            raw_analysis,
+            num_slices=item["volume"].shape[0],
+            slice_width=item["volume"].shape[2],
+        )
         label = item["source_file"].stem
         if item["laterality"]:
             label = f"{label} ({item['laterality']})"
@@ -863,7 +1088,12 @@ def load_exam(exam_dir: Path) -> ExamViewModel:
             volume=item["volume"],
             fundus_candidate=best_fundus,
             geometry_candidate=geometry_candidate,
+            display_candidate=display_source_candidate,
+            display_mode=display_mode,
+            display_reason=display_reason,
             registration_score=registration_score,
+            raw_analysis=raw_analysis,
+            segmentation_surface_count=len(segmentation_surfaces),
             scan_width_mm=item["scan_width_mm"],
             scan_height_mm=item["scan_height_mm"],
         )
@@ -880,9 +1110,21 @@ def load_exam(exam_dir: Path) -> ExamViewModel:
                 overlay_bounds=bounds,
                 overlay_outline=outline,
                 overlay_spokes=spokes,
+                photo_scan_segments=photo_segments,
+                photo_overlay_bounds=photo_bounds,
+                photo_overlay_outline=photo_outline,
+                segmentation_surfaces=segmentation_surfaces,
+                fovea_point=fovea_point,
+                photo_fovea_point=photo_fovea_point,
+                registration_score=registration_score,
+                display_mode=display_mode,
+                display_reason=display_reason,
                 metadata_text=metadata_text,
-                fundus_source_file=best_fundus.source_file if best_fundus else "projection-fallback",
-                fundus_source_kind=best_fundus.source_kind if best_fundus else "projection-fallback",
+                fundus_source_file=display_source_candidate.source_file if display_source_candidate else "projection-fallback",
+                fundus_source_kind=display_source_candidate.source_kind if display_source_candidate else "projection-fallback",
+                photo_fundus=to_display_image(best_fundus.image) if best_fundus is not None else None,
+                photo_source_file=best_fundus.source_file if best_fundus is not None else None,
+                photo_source_kind=best_fundus.source_kind if best_fundus is not None else None,
             )
         )
 
@@ -953,6 +1195,9 @@ class ZeissViewerWindow(QMainWindow):
         self.volume_combo = QComboBox()
         self.volume_combo.currentIndexChanged.connect(self.on_volume_changed)
 
+        self.fundus_view_combo = QComboBox()
+        self.fundus_view_combo.currentIndexChanged.connect(self.redraw_views)
+
         self.prev_volume_button = QPushButton("上一组")
         self.prev_volume_button.clicked.connect(self.previous_volume)
 
@@ -983,11 +1228,7 @@ class ZeissViewerWindow(QMainWindow):
         self.summary_label.setWordWrap(True)
         self.summary_label.setObjectName("SummaryLabel")
 
-        self.show_spokes_checkbox = QCheckBox("显示辅助星形线")
-        self.show_spokes_checkbox.setChecked(True)
-        self.show_spokes_checkbox.toggled.connect(self.redraw_views)
-
-        self.show_guides_checkbox = QCheckBox("显示 B-scan 引导线")
+        self.show_guides_checkbox = QCheckBox("显示分层/辅助线")
         self.show_guides_checkbox.setChecked(True)
         self.show_guides_checkbox.toggled.connect(self.redraw_views)
 
@@ -1012,7 +1253,7 @@ class ZeissViewerWindow(QMainWindow):
         self.geometry_info_value = QLabel("-")
 
         self.legend_label = QLabel(
-            "图例：绿色=当前 B-scan，金色=其它切片，红框=扫描范围，青/粉线=B-scan 引导线"
+            "图例：绿色=当前 B-scan，红框=扫描范围，青色十字=黄斑中心，青/粉/绿线=分层结果或辅助线"
         )
         self.legend_label.setWordWrap(True)
         self.legend_label.setObjectName("LegendLabel")
@@ -1183,7 +1424,8 @@ class ZeissViewerWindow(QMainWindow):
 
         display_group = QGroupBox("显示设置")
         display_layout = QGridLayout(display_group)
-        display_layout.addWidget(self.show_spokes_checkbox, 0, 0, 1, 2)
+        display_layout.addWidget(QLabel("左图显示"), 0, 0)
+        display_layout.addWidget(self.fundus_view_combo, 0, 1)
         display_layout.addWidget(self.show_guides_checkbox, 1, 0, 1, 2)
         display_layout.addWidget(QLabel("B-scan 对比度"), 2, 0)
         display_layout.addWidget(self.contrast_slider, 2, 1)
@@ -1237,6 +1479,10 @@ class ZeissViewerWindow(QMainWindow):
         self.volume_combo.blockSignals(True)
         self.volume_combo.clear()
         self.volume_combo.blockSignals(False)
+
+        self.fundus_view_combo.blockSignals(True)
+        self.fundus_view_combo.clear()
+        self.fundus_view_combo.blockSignals(False)
 
         self.slice_slider.blockSignals(True)
         self.slice_slider.setMaximum(0)
@@ -1357,6 +1603,18 @@ class ZeissViewerWindow(QMainWindow):
         self.slice_spin.setSuffix(f" / {max_index + 1}")
         self.slice_spin.blockSignals(False)
 
+        previous_view = self.fundus_view_combo.currentData()
+        self.fundus_view_combo.blockSignals(True)
+        self.fundus_view_combo.clear()
+        if model.photo_fundus is not None:
+            self.fundus_view_combo.addItem("真实眼底照片（推荐）", "photo")
+        self.fundus_view_combo.addItem("定位参考图", "overlay")
+        target_index = 0
+        if previous_view == "overlay":
+            target_index = self.fundus_view_combo.count() - 1
+        self.fundus_view_combo.setCurrentIndex(target_index)
+        self.fundus_view_combo.blockSignals(False)
+
         exam = self.current_exam()
         self.metadata_edit.setPlainText(model.metadata_text)
         self.summary_label.setText(
@@ -1365,12 +1623,29 @@ class ZeissViewerWindow(QMainWindow):
         self.volume_info_value.setText(
             f"{model.source_file} | 序列={model.volume_id} | 尺寸={tuple(model.slices.shape)}"
         )
-        self.fundus_info_value.setText(
-            f"{model.fundus_source_file} | {describe_fundus_source_kind(model.fundus_source_kind)} | 尺寸={tuple(model.fundus.shape)}"
+        fundus_info_text = (
+            f"当前显示={model.fundus_source_file} | {describe_fundus_source_kind(model.fundus_source_kind)} | 尺寸={tuple(model.fundus.shape)}"
         )
+        if model.photo_fundus is not None and model.photo_source_file:
+            fundus_info_text += (
+                f"\n真实眼底={model.photo_source_file} | "
+                f"{describe_fundus_source_kind(model.photo_source_kind or 'fundus_photo')} | "
+                f"尺寸={tuple(model.photo_fundus.shape)}"
+            )
+        self.fundus_info_value.setText(fundus_info_text)
         if model.overlay_bounds is not None:
             _, _, width, height = model.overlay_bounds
-            self.geometry_info_value.setText(f"覆盖框：{width:.1f}px × {height:.1f}px")
+            segmentation_label = f"分层={len(model.segmentation_surfaces)} 条" if model.segmentation_surfaces else "分层=未解析"
+            fovea_label = "黄斑中心=已解析" if model.fovea_point is not None else "黄斑中心=未解析"
+            registration_label = (
+                f"配准分数={model.registration_score:.3f}"
+                if model.registration_score is not None
+                else "配准分数=未计算"
+            )
+            self.geometry_info_value.setText(
+                f"覆盖框：{width:.1f}px × {height:.1f}px | {segmentation_label} | {fovea_label} | "
+                f"{DISPLAY_MODE_LABELS.get(model.display_mode, model.display_mode)} | {registration_label}"
+            )
         else:
             self.geometry_info_value.setText("-")
         self.redraw_views()
@@ -1383,20 +1658,29 @@ class ZeissViewerWindow(QMainWindow):
         self.canvas.ax_fundus.clear()
         self.canvas.ax_bscan.clear()
 
-        fundus = model.fundus
+        selected_fundus_view = self.fundus_view_combo.currentData() or "overlay"
+        showing_photo = selected_fundus_view == "photo" and model.photo_fundus is not None
+        fundus = model.photo_fundus if showing_photo and model.photo_fundus is not None else model.fundus
+        fundus_source_file = model.photo_source_file if showing_photo and model.photo_source_file else model.fundus_source_file
+        fundus_source_kind = model.photo_source_kind if showing_photo and model.photo_source_kind else model.fundus_source_kind
+        active_outline = model.photo_overlay_outline if showing_photo else model.overlay_outline
+        active_bounds = model.photo_overlay_bounds if showing_photo else model.overlay_bounds
+        active_fovea_point = model.photo_fovea_point if showing_photo else model.fovea_point
+        active_scan_segments = model.photo_scan_segments if showing_photo else model.scan_segments
         if fundus.ndim == 2:
             self.canvas.ax_fundus.imshow(fundus, cmap="gray", origin="upper")
         else:
             self.canvas.ax_fundus.imshow(fundus, origin="upper")
         self.canvas.ax_fundus.axis("off")
+        title_suffix = " | 直接叠加定位" if showing_photo else ""
         self.canvas.ax_fundus.set_title(
-            f"眼底图 / {describe_fundus_source_kind(model.fundus_source_kind)} / {Path(model.fundus_source_file).stem}",
+            f"眼底图 / {describe_fundus_source_kind(fundus_source_kind)} / {Path(fundus_source_file).stem}{title_suffix}",
             color="#E5E7EB",
             fontsize=13,
         )
 
-        if model.overlay_outline:
-            outline = np.asarray(model.overlay_outline + [model.overlay_outline[0]], dtype=np.float32)
+        if active_outline:
+            outline = np.asarray(active_outline + [active_outline[0]], dtype=np.float32)
             self.canvas.ax_fundus.plot(
                 outline[:, 0],
                 outline[:, 1],
@@ -1405,8 +1689,8 @@ class ZeissViewerWindow(QMainWindow):
                 linestyle="--",
                 alpha=0.85,
             )
-        elif model.overlay_bounds is not None:
-            x0, y0, width, height = model.overlay_bounds
+        elif active_bounds is not None:
+            x0, y0, width, height = active_bounds
             self.canvas.ax_fundus.add_patch(
                 Rectangle(
                     (x0, y0),
@@ -1420,33 +1704,31 @@ class ZeissViewerWindow(QMainWindow):
                 )
             )
 
-        if self.show_spokes_checkbox.isChecked():
-            for (start_x, start_y), (end_x, end_y) in model.overlay_spokes:
-                self.canvas.ax_fundus.plot(
-                    [start_x, end_x],
-                    [start_y, end_y],
-                    color="#D8B14A",
-                    alpha=0.45,
-                    linewidth=0.9,
-                )
+        if active_fovea_point is not None:
+            self.canvas.ax_fundus.scatter(
+                [active_fovea_point[0]],
+                [active_fovea_point[1]],
+                s=38,
+                color="#00FFFF",
+                marker="+",
+                linewidths=1.4,
+                zorder=6,
+            )
 
         current_center_x = None
         current_center_y = None
-        for index, segment in enumerate(model.scan_segments):
-            color = "#66FF66" if index == self.current_slice_index else "#D8B14A"
-            alpha = 0.95 if index == self.current_slice_index else 0.38
-            linewidth = 2.2 if index == self.current_slice_index else 0.8
-            (start_x, start_y), (end_x, end_y) = segment
+        if 0 <= self.current_slice_index < len(active_scan_segments):
+            start_x, start_y = active_scan_segments[self.current_slice_index][0]
+            end_x, end_y = active_scan_segments[self.current_slice_index][1]
             self.canvas.ax_fundus.plot(
                 [start_x, end_x],
                 [start_y, end_y],
-                color=color,
-                alpha=alpha,
-                linewidth=linewidth,
+                color="#66FF66",
+                alpha=0.95,
+                linewidth=2.2,
             )
-            if index == self.current_slice_index:
-                current_center_x = (start_x + end_x) / 2.0
-                current_center_y = (start_y + end_y) / 2.0
+            current_center_x = (start_x + end_x) / 2.0
+            current_center_y = (start_y + end_y) / 2.0
 
         if current_center_x is not None and current_center_y is not None:
             self.canvas.ax_fundus.scatter(
@@ -1473,17 +1755,30 @@ class ZeissViewerWindow(QMainWindow):
             fontsize=13,
         )
 
-        if self.show_guides_checkbox.isChecked():
-            guide_top, guide_lower = estimate_bscan_guides(bscan)
+        if self.show_guides_checkbox.isChecked() and model.segmentation_surfaces:
+            surface_colors = ["#00FFFF", "#FF66CC", "#66FF66"]
             x_coords = np.arange(bscan.shape[1])
-            if guide_top is not None:
-                self.canvas.ax_bscan.plot(x_coords, guide_top, color="#00FFFF", linewidth=1.0, alpha=0.95)
-            if guide_lower is not None:
-                self.canvas.ax_bscan.plot(x_coords, guide_lower, color="#FF66CC", linewidth=1.0, alpha=0.95)
+            for index, surface in enumerate(model.segmentation_surfaces):
+                if self.current_slice_index >= surface.shape[0]:
+                    continue
+                y_coords = surface[self.current_slice_index]
+                if y_coords.shape[0] != bscan.shape[1]:
+                    continue
+                self.canvas.ax_bscan.plot(
+                    x_coords,
+                    y_coords,
+                    color=surface_colors[index % len(surface_colors)],
+                    alpha=0.95,
+                    linewidth=1.0,
+                )
 
         self.slice_info_label.setText(f"切片：{self.current_slice_index + 1}/{len(model.slices)}")
+        selected_fundus_view = self.fundus_view_combo.currentData() or "overlay"
+        status_source_kind = model.photo_source_kind if selected_fundus_view == "photo" and model.photo_source_kind else model.fundus_source_kind
         self.statusBar().showMessage(
-            f"{model.source_file} | 切片 {self.current_slice_index + 1}/{len(model.slices)} | 眼底图={describe_fundus_source_kind(model.fundus_source_kind)}"
+            f"{model.source_file} | 切片 {self.current_slice_index + 1}/{len(model.slices)} | "
+            f"显示={describe_fundus_source_kind(status_source_kind)} | "
+            f"{DISPLAY_MODE_LABELS.get(model.display_mode, model.display_mode)}"
         )
         self.canvas.draw_idle()
 
@@ -1535,7 +1830,7 @@ class ZeissViewerWindow(QMainWindow):
         self.set_slice_index(len(model.slices) - 1)
 
     def reset_display_controls(self):
-        self.show_spokes_checkbox.setChecked(True)
+        self.fundus_view_combo.setCurrentIndex(0)
         self.show_guides_checkbox.setChecked(True)
         self.contrast_slider.setValue(100)
         self.brightness_slider.setValue(0)
