@@ -1,6 +1,6 @@
 import os
 
-from scripts.dir_process import remove_and_create_dir
+from scripts.old.dir_process import remove_and_create_dir
 # from oct_converter.readers import Dicom
 from zeiss_dicom import ZEISSDicom as Dicom
 

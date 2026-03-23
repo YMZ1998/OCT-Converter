@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import cgi
 import json
 import re
+import shutil
 import sys
+import tempfile
 import threading
 import webbrowser
 from dataclasses import dataclass
@@ -24,15 +27,16 @@ if str(PROJECT_ROOT) not in sys.path:
 from oct_converter.readers import BOCT, Dicom, E2E, FDA, FDS, IMG, POCT
 
 SUPPORTED_EXTENSIONS = (".fds", ".fda", ".e2e", ".img", ".oct", ".OCT", ".dcm", ".dicom")
+NORMALIZED_SUPPORTED_EXTENSIONS = frozenset(extension.lower() for extension in SUPPORTED_EXTENSIONS)
 FILE_DIALOG_TYPES = [
-    ("Supported OCT files", "*.fds *.fda *.e2e *.img *.oct *.OCT *.dcm *.dicom"),
-    ("Topcon FDS", "*.fds"),
-    ("Topcon FDA", "*.fda"),
-    ("Heidelberg E2E", "*.e2e"),
-    ("Zeiss IMG", "*.img"),
+    ("Supported OCT files", "*.fds *.FDS *.fda *.FDA *.e2e *.E2E *.img *.IMG *.oct *.OCT *.dcm *.DCM *.dicom *.DICOM"),
+    ("Topcon FDS", "*.fds *.FDS"),
+    ("Topcon FDA", "*.fda *.FDA"),
+    ("Heidelberg E2E", "*.e2e *.E2E"),
+    ("Zeiss IMG", "*.img *.IMG"),
     ("Optovue OCT", "*.oct"),
     ("Bioptigen OCT", "*.OCT"),
-    ("DICOM", "*.dcm *.dicom"),
+    ("DICOM", "*.dcm *.DCM *.dicom *.DICOM"),
     ("All files", "*.*"),
 ]
 
@@ -397,6 +401,8 @@ class OverlayInfo:
 @dataclass
 class LoadedDataset:
     source_path: str
+    source_kind: str
+    recent_path: str
     reader_name: str
     volumes: list[Any]
     fundus_images: list[Any]
@@ -410,9 +416,64 @@ class ViewerState:
         self.img_interlaced = img_interlaced
         self.dataset: LoadedDataset | None = None
         self.lock = threading.Lock()
+        self.uploaded_file_path: Path | None = None
 
     def load(self, filepath: str) -> dict[str, Any]:
         path = self._resolve_path(filepath)
+        payload = self._load_path(
+            path,
+            source_path=str(path),
+            source_kind="path",
+            recent_path=str(path),
+        )
+        self._cleanup_uploaded_file()
+        return payload
+
+    def load_uploaded_file(self, filename: str, fileobj: Any) -> dict[str, Any]:
+        upload_name = Path(filename or "").name.strip()
+        if not upload_name:
+            raise ValueError("Missing uploaded filename.")
+
+        suffix = Path(upload_name).suffix
+        normalized_suffix = suffix.lower()
+        if normalized_suffix not in NORMALIZED_SUPPORTED_EXTENSIONS:
+            raise ValueError(f"Unsupported file type: {suffix or upload_name}")
+
+        with tempfile.NamedTemporaryFile(delete=False, prefix="oct-web-viewer-", suffix=suffix) as handle:
+            shutil.copyfileobj(fileobj, handle)
+            temp_path = Path(handle.name)
+
+        try:
+            if temp_path.stat().st_size <= 0:
+                raise ValueError("Uploaded file is empty.")
+
+            payload = self._load_path(
+                temp_path,
+                source_path=upload_name,
+                source_kind="upload",
+                recent_path="",
+            )
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
+
+        previous_upload = self.uploaded_file_path
+        self.uploaded_file_path = temp_path
+        if previous_upload and previous_upload != temp_path:
+            previous_upload.unlink(missing_ok=True)
+        return payload
+
+    def close(self) -> None:
+        self._cleanup_uploaded_file()
+
+    def _load_path(
+        self,
+        path: Path,
+        *,
+        source_path: str,
+        source_kind: str,
+        recent_path: str,
+    ) -> dict[str, Any]:
         if not path.exists():
             raise FileNotFoundError(path)
 
@@ -424,7 +485,9 @@ class ViewerState:
         fundus_images = as_list(self._safe_read_fundus(reader))
         overlay_infos = self._build_overlay_infos(reader, volumes, fundus_images)
         dataset = LoadedDataset(
-            source_path=str(path.resolve()),
+            source_path=source_path,
+            source_kind=source_kind,
+            recent_path=recent_path,
             reader_name=reader.__class__.__name__,
             volumes=volumes,
             fundus_images=fundus_images,
@@ -483,6 +546,8 @@ class ViewerState:
         return {
             "loaded": True,
             "sourcePath": dataset.source_path,
+            "sourceKind": dataset.source_kind,
+            "recentPath": dataset.recent_path,
             "reader": dataset.reader_name,
             "volumes": [
                 self._describe_volume(volume, index, dataset.fundus_images, dataset.overlay_infos[index] if index < len(dataset.overlay_infos) else None)
@@ -578,6 +643,11 @@ class ViewerState:
         if not path.is_absolute():
             path = Path.cwd() / path
         return path.resolve()
+
+    def _cleanup_uploaded_file(self) -> None:
+        if self.uploaded_file_path:
+            self.uploaded_file_path.unlink(missing_ok=True)
+            self.uploaded_file_path = None
 
     def _read_oct_volumes(self, reader: Any) -> Any:
         if isinstance(reader, IMG):
@@ -1284,12 +1354,55 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        route = parsed.path
+        try:
+            if route == "/api/upload":
+                payload = self._handle_upload()
+                self._send_json(HTTPStatus.OK, payload)
+                return
+
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Unknown route: {route}"})
+        except Exception as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
     def log_message(self, format: str, *args: Any) -> None:
         return
 
     def _serve_index(self) -> None:
         payload = self.html_path.read_text(encoding="utf-8").encode("utf-8")
         self._send_bytes(HTTPStatus.OK, payload, "text/html; charset=utf-8")
+
+    def _handle_upload(self) -> dict[str, Any]:
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in content_type:
+            raise ValueError("Upload requests must use multipart/form-data.")
+
+        form = cgi.FieldStorage(
+            fp=self.rfile,
+            headers=self.headers,
+            environ={
+                "REQUEST_METHOD": "POST",
+                "CONTENT_TYPE": content_type,
+            },
+        )
+
+        if "file" not in form:
+            raise ValueError("Missing uploaded file field.")
+
+        file_field = form["file"]
+        if isinstance(file_field, list):
+            file_field = file_field[0]
+
+        if not getattr(file_field, "filename", ""):
+            raise ValueError("Missing uploaded filename.")
+
+        file_handle = getattr(file_field, "file", None)
+        if file_handle is None:
+            raise ValueError("Uploaded file payload is unavailable.")
+
+        return self.state.load_uploaded_file(file_field.filename, file_handle)
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -1336,6 +1449,7 @@ def main() -> None:
         pass
     finally:
         server.server_close()
+        state.close()
 
 
 if __name__ == "__main__":

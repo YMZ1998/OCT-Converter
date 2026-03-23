@@ -2,7 +2,7 @@ import json
 import os
 
 from oct_converter.readers import E2E
-from scripts.dir_process import remove_and_create_dir
+from scripts.old.dir_process import remove_and_create_dir
 
 
 def run(filepath):

@@ -257,6 +257,7 @@
         <input id="pathInput" class="grow" type="text" placeholder="输入 OCT 文件路径，例如 D:\data\sample.e2e">
         <button id="browseButton" class="secondary">选择文件</button>
         <button id="loadButton">加载文件</button>
+        <input id="fileInput" type="file" accept=".fds,.FDS,.fda,.FDA,.e2e,.E2E,.img,.IMG,.oct,.OCT,.dcm,.DCM,.dicom,.DICOM" hidden>
         <button id="refreshButton" class="secondary">刷新状态</button>
         <button id="resetViewButton" class="secondary">重置视图</button>
       </div>
@@ -306,6 +307,9 @@
                 <button id="prevButton" class="secondary">上一张</button>
                 <button id="playButton" class="secondary">播放</button>
                 <button id="nextButton" class="secondary">下一张</button>
+                <button id="zoomOutButton" class="secondary">缩小</button>
+                <button id="zoomResetButton" class="secondary">100%</button>
+                <button id="zoomInButton" class="secondary">放大</button>
                 <button id="overlayButton" class="secondary">轮廓开</button>
                 <button id="infoButton" class="secondary" hidden>提示开</button>
               </div>
@@ -382,6 +386,7 @@
       contrast: 100,
       brightness: 0,
       speed: 5,
+      bscanZoom: 1,
       overlay: true,
       showInfo: true,
       lastPath: "",
@@ -401,14 +406,20 @@
       canvasNaturalWidth: 1024,
       canvasNaturalHeight: 512,
       bscanCrop: null,
+      bscanZoom: 1,
       fundusNaturalWidth: 1024,
       fundusNaturalHeight: 1024,
+      playbackGeneration: 0,
+      fundusViewCacheKey: "",
+      fundusViewCacheCanvas: null,
+      contourCache: new Map(),
     };
 
     const elements = {
       pathInput: document.getElementById("pathInput"),
       browseButton: document.getElementById("browseButton"),
       loadButton: document.getElementById("loadButton"),
+      fileInput: document.getElementById("fileInput"),
       refreshButton: document.getElementById("refreshButton"),
       resetViewButton: document.getElementById("resetViewButton"),
       status: document.getElementById("status"),
@@ -425,6 +436,9 @@
       prevButton: document.getElementById("prevButton"),
       playButton: document.getElementById("playButton"),
       nextButton: document.getElementById("nextButton"),
+      zoomOutButton: document.getElementById("zoomOutButton"),
+      zoomResetButton: document.getElementById("zoomResetButton"),
+      zoomInButton: document.getElementById("zoomInButton"),
       overlayButton: document.getElementById("overlayButton"),
       infoButton: document.getElementById("infoButton"),
       contrastSlider: document.getElementById("contrastSlider"),
@@ -460,13 +474,16 @@
     }
 
     function saveUiState() {
+      const persisted = getUiState();
+      const currentPath = elements.pathInput.value.trim();
       const payload = {
         contrast: Number(elements.contrastSlider.value),
         brightness: Number(elements.brightnessSlider.value),
         speed: Number(elements.speedSlider.value),
+        bscanZoom: Number(state.bscanZoom),
         overlay: state.overlay,
         showInfo: state.showInfo,
-        lastPath: elements.pathInput.value.trim(),
+        lastPath: currentPath || persisted.lastPath || "",
       };
       localStorage.setItem(STORAGE_KEYS.uiState, JSON.stringify(payload));
     }
@@ -527,13 +544,36 @@
       elements.status.classList.toggle("error", Boolean(isError));
     }
 
-    async function fetchJson(url) {
-      const response = await fetch(url, { cache: "no-store" });
+    async function fetchJson(url, options = {}) {
+      const response = await fetch(url, { cache: "no-store", ...options });
       const payload = await response.json();
       if (!response.ok) {
         throw new Error(payload.error || "请求失败");
       }
       return payload;
+    }
+
+    function waitMs(duration) {
+      return new Promise((resolve) => window.setTimeout(resolve, duration));
+    }
+
+    function invalidateViewerCaches() {
+      state.fundusViewCacheKey = "";
+      state.fundusViewCacheCanvas = null;
+      state.contourCache.clear();
+    }
+
+    function clampBscanZoom(value) {
+      return Math.min(4, Math.max(0.25, Number(value) || 1));
+    }
+
+    function setBscanZoom(value, { persist = true } = {}) {
+      state.bscanZoom = clampBscanZoom(value);
+      updateLabels();
+      fitCanvasDisplays();
+      if (persist) {
+        saveUiState();
+      }
     }
 
     function currentVolume() {
@@ -551,6 +591,7 @@
         window.clearInterval(state.timer);
         state.timer = null;
       }
+      state.playbackGeneration += 1;
       state.playing = false;
       elements.playButton.textContent = "播放";
     }
@@ -562,6 +603,9 @@
       elements.contrastLabel.textContent = `${elements.contrastSlider.value}%`;
       elements.brightnessLabel.textContent = `${elements.brightnessSlider.value}`;
       elements.speedLabel.textContent = `${elements.speedSlider.value} FPS`;
+      if (elements.zoomResetButton) {
+        elements.zoomResetButton.textContent = `${Math.round(state.bscanZoom * 100)}%`;
+      }
       elements.overlayButton.textContent = state.overlay ? "轮廓开" : "轮廓关";
       elements.infoButton.textContent = state.showInfo ? "提示开" : "提示关";
       elements.contourNames.textContent = volume && volume.contourNames.length
@@ -592,7 +636,7 @@
       elements.bscanViewHint.style.display = hintDisplay;
       if (!volume) {
         elements.fundusViewTitle.textContent = "定位图 / Fundus";
-        elements.fundusViewHint.textContent = "左侧显示定位图，红线对应当前切片。";
+        elements.fundusViewHint.textContent = "左侧显示定位图，点击定位线可跳转到对应切片。";
         elements.bscanViewTitle.textContent = "当前 B-Scan";
         elements.bscanViewHint.textContent = "右侧显示与左侧定位线匹配的当前切片。";
         return;
@@ -600,31 +644,37 @@
 
       const sliceNumber = state.sliceIndex + 1;
       const segmentCount = Array.isArray(volume.overlaySegments) ? volume.overlaySegments.length : 0;
-      const isSquareRaster = volume.projectionMode === "square-raster-default";
+      const displayMode = getOverlayDisplayMode(volume);
+      const currentSegment = Array.isArray(volume.overlaySegments) ? volume.overlaySegments[state.sliceIndex] : null;
+      const directionLabel = getSegmentDirectionLabel(currentSegment);
 
       elements.fundusViewTitle.textContent = volume.matchedFundusLabel || "定位图 / Fundus";
 
       if (volume.overlayWarning) {
         elements.fundusViewHint.textContent = volume.overlayWarning;
-      } else if (isSquareRaster) {
-        elements.fundusViewHint.textContent = `方形扫描区域近似定位，红线为当前 B-scan（第 ${sliceNumber} / ${volume.sliceCount} 条）。`;
+      } else if (displayMode === "box") {
+        elements.fundusViewHint.textContent = `当前显示方框扫描区域，红框对应 B-scan 第 ${sliceNumber} / ${volume.sliceCount} 张。`;
+      } else if (displayMode === "radial") {
+        elements.fundusViewHint.textContent = `当前显示放射状扫描定位，第 ${sliceNumber} / ${volume.sliceCount} 张。`;
+      } else if (displayMode === "single-line") {
+        elements.fundusViewHint.textContent = `当前为${directionLabel}扫描线，对应当前 B-scan。`;
       } else if (volume.overlayMode === "e2e-metadata") {
-        elements.fundusViewHint.textContent = `定位线已与 B-scan 匹配，当前为第 ${sliceNumber} / ${volume.sliceCount} 条。`;
+        elements.fundusViewHint.textContent = `定位线已与 B-scan 元数据匹配，当前为第 ${sliceNumber} / ${volume.sliceCount} 张。`;
       } else {
-        elements.fundusViewHint.textContent = `当前定位线：第 ${sliceNumber} / ${Math.max(segmentCount, volume.sliceCount)} 条，点击左图可快速切换。`;
+        elements.fundusViewHint.textContent = `当前定位线：第 ${sliceNumber} / ${Math.max(segmentCount, volume.sliceCount)} 张，点击左图可快速切换。`;
       }
 
       elements.bscanViewTitle.textContent = volume.label || "当前 B-Scan";
-      elements.bscanViewHint.textContent = isSquareRaster
-        ? `当前扫描线：${sliceNumber} / ${volume.sliceCount}`
+      elements.bscanViewHint.textContent = displayMode === "box"
+        ? `当前方框区域对应的 B-scan：${sliceNumber} / ${volume.sliceCount}`
         : `Slice ${sliceNumber} / ${volume.sliceCount}`;
     }
 
     function getSegmentDirectionLabel(segment) {
       const angle = Math.abs(Number(segment?.angleDegrees ?? 0)) % 180;
-      if (angle <= 15 || angle >= 165) return "??";
-      if (Math.abs(angle - 90) <= 15) return "??";
-      return angle < 90 ? "???" : "???";
+      if (angle <= 15 || angle >= 165) return "水平";
+      if (Math.abs(angle - 90) <= 15) return "垂直";
+      return "斜向";
     }
 
     function getOverlayDisplayMode(volume) {
@@ -655,47 +705,6 @@
       return "multi-line";
     }
 
-    function updateViewInfo() {
-      const volume = currentVolume();
-      const hintDisplay = state.showInfo ? "" : "none";
-      elements.fundusViewHint.style.display = hintDisplay;
-      elements.bscanViewHint.style.display = hintDisplay;
-      if (!volume) {
-        elements.fundusViewTitle.textContent = "??? / Fundus";
-        elements.fundusViewHint.textContent = "????????????????????";
-        elements.bscanViewTitle.textContent = "?? B-Scan";
-        elements.bscanViewHint.textContent = "?????????????????";
-        return;
-      }
-
-      const sliceNumber = state.sliceIndex + 1;
-      const segmentCount = Array.isArray(volume.overlaySegments) ? volume.overlaySegments.length : 0;
-      const displayMode = getOverlayDisplayMode(volume);
-      const currentSegment = Array.isArray(volume.overlaySegments) ? volume.overlaySegments[state.sliceIndex] : null;
-      const directionLabel = getSegmentDirectionLabel(currentSegment);
-
-      elements.fundusViewTitle.textContent = volume.matchedFundusLabel || "??? / Fundus";
-
-      if (volume.overlayWarning) {
-        elements.fundusViewHint.textContent = volume.overlayWarning;
-      } else if (displayMode === "box") {
-        elements.fundusViewHint.textContent = `???????????????? B-scan?? ${sliceNumber} / ${volume.sliceCount} ???`;
-      } else if (displayMode === "radial") {
-        elements.fundusViewHint.textContent = `???????????????????? ${sliceNumber} / ${volume.sliceCount} ??`;
-      } else if (displayMode === "single-line") {
-        elements.fundusViewHint.textContent = `???${directionLabel}?????????? B-scan?`;
-      } else if (volume.overlayMode === "e2e-metadata") {
-        elements.fundusViewHint.textContent = `??????? B-scan ????????? ${sliceNumber} / ${volume.sliceCount} ??`;
-      } else {
-        elements.fundusViewHint.textContent = `??????????????????? ${sliceNumber} / ${Math.max(segmentCount, volume.sliceCount)} ??`;
-      }
-
-      elements.bscanViewTitle.textContent = volume.label || "?? B-Scan";
-      elements.bscanViewHint.textContent = displayMode === "box"
-        ? `?????? B-scan?${sliceNumber} / ${volume.sliceCount}`
-        : `Slice ${sliceNumber} / ${volume.sliceCount}`;
-    }
-
     function renderState() {
       const loaded = Boolean(state.data?.loaded);
       const volume = currentVolume();
@@ -710,6 +719,9 @@
       elements.prevButton.disabled = !volume;
       elements.nextButton.disabled = !volume;
       elements.playButton.disabled = !volume;
+      elements.zoomOutButton.disabled = !volume;
+      elements.zoomResetButton.disabled = !volume;
+      elements.zoomInButton.disabled = !volume;
       elements.overlayButton.disabled = !volume;
       elements.infoButton.disabled = !volume;
       elements.sliceSlider.max = volume ? String(Math.max(0, volume.sliceCount - 1)) : "0";
@@ -983,6 +995,9 @@
       elements.prevButton.disabled = !volume;
       elements.nextButton.disabled = !volume;
       elements.playButton.disabled = !volume;
+      elements.zoomOutButton.disabled = !volume;
+      elements.zoomResetButton.disabled = !volume;
+      elements.zoomInButton.disabled = !volume;
       elements.overlayButton.disabled = !volume;
       elements.sliceSlider.max = volume ? String(Math.max(0, volume.sliceCount - 1)) : "0";
       elements.sliceSlider.value = volume ? String(Math.min(state.sliceIndex, volume.sliceCount - 1)) : "0";
@@ -994,7 +1009,7 @@
       fitCanvasDisplays();
     }
 
-    function fitCanvasToStage({ canvas, stage, logicalWidth, logicalHeight, minWidth = 120, minHeight = 180 }) {
+    function fitCanvasToStage({ canvas, stage, logicalWidth, logicalHeight, minWidth = 120, minHeight = 180, zoomFactor = 1 }) {
       const safeLogicalWidth = Math.max(1, logicalWidth || canvas.width || 1);
       const safeLogicalHeight = Math.max(1, logicalHeight || canvas.height || 1);
       const stageRect = stage.getBoundingClientRect();
@@ -1003,7 +1018,7 @@
       const padY = (parseFloat(stageStyle.paddingTop) || 0) + (parseFloat(stageStyle.paddingBottom) || 0);
       const maxWidth = Math.max(minWidth, stageRect.width - padX);
       const maxHeight = Math.max(minHeight, stageRect.height - padY);
-      const scale = Math.min(maxWidth / safeLogicalWidth, maxHeight / safeLogicalHeight);
+      const scale = Math.min(maxWidth / safeLogicalWidth, maxHeight / safeLogicalHeight) * Math.max(0.01, zoomFactor || 1);
       canvas.style.width = `${Math.max(1, Math.round(safeLogicalWidth * scale))}px`;
       canvas.style.height = `${Math.max(1, Math.round(safeLogicalHeight * scale))}px`;
     }
@@ -1025,6 +1040,7 @@
         stage: elements.stage,
         logicalWidth: crop.width * widthScale,
         logicalHeight: crop.height * heightScale,
+        zoomFactor: state.bscanZoom,
       });
       fitCanvasToStage({
         canvas: elements.fundusCanvas,
@@ -1232,27 +1248,53 @@
         return;
       }
 
-      let drawablePayload = null;
-      try {
-        drawablePayload = await loadDrawable(
-          `/api/volume/${state.volumeIndex}/fundus-view.png?ts=${Date.now()}`,
-          state.fundusNaturalWidth || 1024,
-          state.fundusNaturalHeight || 1024,
-          "定位图像加载失败",
-        );
-        if (token !== state.renderToken) return;
+      const cacheKey = `${state.data?.sourcePath || ""}::${state.volumeIndex}`;
+      if (!state.fundusViewCacheCanvas || state.fundusViewCacheKey !== cacheKey) {
+        let drawablePayload = null;
+        try {
+          drawablePayload = await loadDrawable(
+            `/api/volume/${state.volumeIndex}/fundus-view.png?ts=${Date.now()}`,
+            state.fundusNaturalWidth || 1024,
+            state.fundusNaturalHeight || 1024,
+            "切片图像加载失败",
+          );
+          if (token !== state.renderToken) return;
 
-        state.fundusNaturalWidth = drawablePayload.naturalWidth;
-        state.fundusNaturalHeight = drawablePayload.naturalHeight;
+          state.fundusNaturalWidth = drawablePayload.naturalWidth;
+          state.fundusNaturalHeight = drawablePayload.naturalHeight;
+
+          const cacheCanvas = document.createElement("canvas");
+          cacheCanvas.width = state.fundusNaturalWidth;
+          cacheCanvas.height = state.fundusNaturalHeight;
+          const cacheCtx = cacheCanvas.getContext("2d");
+          if (!cacheCtx) {
+            throw new Error("Fundus cache canvas initialization failed.");
+          }
+          cacheCtx.drawImage(drawablePayload.drawable, 0, 0, cacheCanvas.width, cacheCanvas.height);
+          state.fundusViewCacheCanvas = cacheCanvas;
+          state.fundusViewCacheKey = cacheKey;
+        } finally {
+          drawablePayload?.cleanup?.();
+        }
+      }
+
+      if (!state.fundusViewCacheCanvas) {
+        return;
+      }
+
+      const fundusSizeChanged = (
+        elements.fundusCanvas.width !== state.fundusNaturalWidth
+        || elements.fundusCanvas.height !== state.fundusNaturalHeight
+      );
+      if (fundusSizeChanged) {
         elements.fundusCanvas.width = state.fundusNaturalWidth;
         elements.fundusCanvas.height = state.fundusNaturalHeight;
         fitCanvasDisplays();
-        fundusCtx.clearRect(0, 0, elements.fundusCanvas.width, elements.fundusCanvas.height);
-        fundusCtx.drawImage(drawablePayload.drawable, 0, 0, elements.fundusCanvas.width, elements.fundusCanvas.height);
-        drawFundusOverlay(volume);
-      } finally {
-        drawablePayload?.cleanup?.();
       }
+
+      fundusCtx.clearRect(0, 0, elements.fundusCanvas.width, elements.fundusCanvas.height);
+      fundusCtx.drawImage(state.fundusViewCacheCanvas, 0, 0, elements.fundusCanvas.width, elements.fundusCanvas.height);
+      drawFundusOverlay(volume);
     }
 
     async function drawCurrentSlice(token = ++state.renderToken) {
@@ -1275,34 +1317,30 @@
 
         state.canvasNaturalWidth = drawablePayload.naturalWidth;
         state.canvasNaturalHeight = drawablePayload.naturalHeight;
-        state.bscanCrop = computeBscanCrop(
-          drawablePayload.drawable,
-          state.canvasNaturalWidth,
-          state.canvasNaturalHeight,
+        state.bscanCrop = null;
+        const bscanSizeChanged = (
+          elements.octCanvas.width !== state.canvasNaturalWidth
+          || elements.octCanvas.height !== state.canvasNaturalHeight
         );
-        const crop = state.bscanCrop || getDefaultBscanCrop();
-        elements.octCanvas.width = crop.width;
-        elements.octCanvas.height = crop.height;
-        fitCanvasDisplays();
+        if (bscanSizeChanged) {
+          elements.octCanvas.width = state.canvasNaturalWidth;
+          elements.octCanvas.height = state.canvasNaturalHeight;
+          fitCanvasDisplays();
+        }
         ctx.clearRect(0, 0, elements.octCanvas.width, elements.octCanvas.height);
-        ctx.drawImage(
-          drawablePayload.drawable,
-          crop.left,
-          crop.top,
-          crop.width,
-          crop.height,
-          0,
-          0,
-          elements.octCanvas.width,
-          elements.octCanvas.height,
-        );
+        ctx.drawImage(drawablePayload.drawable, 0, 0, elements.octCanvas.width, elements.octCanvas.height);
       } finally {
         drawablePayload?.cleanup?.();
       }
 
       if (state.overlay && volume.contourNames.length) {
         try {
-          const contourPayload = await fetchJson(`/api/volume/${state.volumeIndex}/contours/${state.sliceIndex}.json`);
+          const contourCacheKey = `${state.data?.sourcePath || ""}::${state.volumeIndex}::${state.sliceIndex}`;
+          let contourPayload = state.contourCache.get(contourCacheKey);
+          if (!contourPayload) {
+            contourPayload = await fetchJson(`/api/volume/${state.volumeIndex}/contours/${state.sliceIndex}.json`);
+            state.contourCache.set(contourCacheKey, contourPayload);
+          }
           if (token !== state.renderToken) return;
           drawContours(contourPayload.contours || {}, elements.octCanvas.width, elements.octCanvas.height);
         } catch (error) {
@@ -1329,6 +1367,7 @@
 
     async function refreshState() {
       state.data = await fetchJson("/api/state");
+      invalidateViewerCaches();
       if (state.data.loaded) {
         const maxVolume = Math.max(0, state.data.volumes.length - 1);
         const maxFundus = Math.max(0, state.data.fundusImages.length - 1);
@@ -1346,6 +1385,32 @@
       scheduleDraw();
     }
 
+    function applyLoadedPayload(payload, options = {}) {
+      state.data = payload;
+      state.volumeIndex = 0;
+      state.fundusIndex = 0;
+      state.sliceIndex = 0;
+      invalidateViewerCaches();
+      applyMatchedFundus();
+      resetPlayback();
+
+      const sourceKind = payload?.sourceKind || "path";
+      const recentPath = payload?.recentPath || "";
+      if (sourceKind === "path") {
+        elements.pathInput.value = recentPath || options.fallbackPath || payload.sourcePath || "";
+        if (elements.pathInput.value.trim()) {
+          saveRecentFile(elements.pathInput.value.trim());
+        }
+      } else {
+        elements.pathInput.value = "";
+      }
+
+      saveUiState();
+      renderState();
+      scheduleDraw();
+      setStatus(`已加载：${payload.sourcePath}`);
+    }
+
     async function loadPath() {
       const filepath = elements.pathInput.value.trim();
       if (!filepath) {
@@ -1354,18 +1419,8 @@
       }
       setBusy(true, "正在读取 OCT 文件，请稍候...");
       try {
-        state.data = await fetchJson(`/api/load?path=${encodeURIComponent(filepath)}`);
-        state.volumeIndex = 0;
-        state.fundusIndex = 0;
-        state.sliceIndex = 0;
-        applyMatchedFundus();
-        resetPlayback();
-        elements.pathInput.value = state.data.sourcePath || filepath;
-        saveRecentFile(elements.pathInput.value.trim());
-        saveUiState();
-        renderState();
-        scheduleDraw();
-        setStatus(`已加载：${state.data.sourcePath}`);
+        const payload = await fetchJson(`/api/load?path=${encodeURIComponent(filepath)}`);
+        applyLoadedPayload(payload, { fallbackPath: filepath });
       } catch (error) {
         setStatus(error.message, true);
       } finally {
@@ -1373,41 +1428,61 @@
       }
     }
 
-    async function pickFileAndLoad() {
-      setBusy(true, "正在打开系统文件选择框...");
+    async function uploadSelectedFile(file) {
+      if (!file) {
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("file", file, file.name);
+      setBusy(true, `正在上传文件：${file.name}`);
       try {
-        const payload = await fetchJson("/api/pick-file");
-        if (payload.cancelled) {
-          setStatus("已取消选择文件。");
-          return;
-        }
-        state.data = payload;
-        state.volumeIndex = 0;
-        state.fundusIndex = 0;
-        state.sliceIndex = 0;
-        applyMatchedFundus();
-        resetPlayback();
-        elements.pathInput.value = state.data.sourcePath || "";
-        saveRecentFile(elements.pathInput.value.trim());
-        saveUiState();
-        renderState();
-        scheduleDraw();
-        setStatus(`已加载：${state.data.sourcePath}`);
+        const payload = await fetchJson("/api/upload", {
+          method: "POST",
+          body: formData,
+        });
+        applyLoadedPayload(payload);
       } catch (error) {
         setStatus(error.message, true);
       } finally {
+        elements.fileInput.value = "";
         setBusy(false);
       }
     }
 
-    function stepSlice(delta) {
+    function advanceSlice(delta, shouldSchedule = true) {
       const volume = currentVolume();
       if (!volume) return;
       const sliceCount = volume.sliceCount;
       state.sliceIndex = (state.sliceIndex + delta + sliceCount) % sliceCount;
       elements.sliceSlider.value = String(state.sliceIndex);
       updateLabels();
-      scheduleDraw();
+      if (shouldSchedule) {
+        scheduleDraw();
+      }
+    }
+
+    function stepSlice(delta) {
+      advanceSlice(delta, true);
+    }
+
+    async function runPlaybackLoop(generation) {
+      while (state.playing && generation === state.playbackGeneration) {
+        const startedAt = performance.now();
+        advanceSlice(1, false);
+        try {
+          await drawViewer();
+        } catch (error) {
+          setStatus(error.message, true);
+          resetPlayback();
+          return;
+        }
+        const targetInterval = Math.max(80, Math.round(1000 / Number(elements.speedSlider.value)));
+        const remainingDelay = Math.max(0, targetInterval - (performance.now() - startedAt));
+        if (remainingDelay > 0) {
+          await waitMs(remainingDelay);
+        }
+      }
     }
 
     function togglePlay() {
@@ -1419,14 +1494,17 @@
       }
       state.playing = true;
       elements.playButton.textContent = "暂停";
-      const intervalMs = Math.max(80, Math.round(1000 / Number(elements.speedSlider.value)));
-      state.timer = window.setInterval(() => stepSlice(1), intervalMs);
+      state.playbackGeneration += 1;
+      const generation = state.playbackGeneration;
+      runPlaybackLoop(generation);
     }
 
     function resetViewControls() {
       elements.contrastSlider.value = "100";
       elements.brightnessSlider.value = "0";
       elements.speedSlider.value = "5";
+      state.bscanZoom = 1;
+      fitCanvasDisplays();
       state.overlay = true;
       state.showInfo = true;
       updateLabels();
@@ -1440,6 +1518,7 @@
       elements.contrastSlider.value = String(persisted.contrast ?? DEFAULT_UI_STATE.contrast);
       elements.brightnessSlider.value = String(persisted.brightness ?? DEFAULT_UI_STATE.brightness);
       elements.speedSlider.value = String(persisted.speed ?? DEFAULT_UI_STATE.speed);
+      state.bscanZoom = clampBscanZoom(persisted.bscanZoom ?? DEFAULT_UI_STATE.bscanZoom);
       state.overlay = Boolean(persisted.overlay ?? DEFAULT_UI_STATE.overlay);
       state.showInfo = Boolean(persisted.showInfo ?? DEFAULT_UI_STATE.showInfo);
       if (!elements.pathInput.value) {
@@ -1449,7 +1528,13 @@
       updateViewInfo();
     }
 
-    elements.browseButton.addEventListener("click", pickFileAndLoad);
+    elements.browseButton.addEventListener("click", () => {
+      elements.fileInput.click();
+    });
+    elements.fileInput.addEventListener("change", () => {
+      const [file] = elements.fileInput.files || [];
+      uploadSelectedFile(file);
+    });
     elements.loadButton.addEventListener("click", loadPath);
     elements.refreshButton.addEventListener("click", () => {
       setBusy(true, "正在刷新状态...");
@@ -1468,6 +1553,7 @@
       state.volumeIndex = Number(elements.volumeSelect.value);
       state.fundusIndex = 0;
       state.sliceIndex = 0;
+      invalidateViewerCaches();
       applyMatchedFundus();
       renderState();
       scheduleDraw();
@@ -1484,6 +1570,9 @@
     elements.prevButton.addEventListener("click", () => stepSlice(-1));
     elements.nextButton.addEventListener("click", () => stepSlice(1));
     elements.playButton.addEventListener("click", togglePlay);
+    elements.zoomOutButton.addEventListener("click", () => setBscanZoom(state.bscanZoom / 1.2));
+    elements.zoomResetButton.addEventListener("click", () => setBscanZoom(1));
+    elements.zoomInButton.addEventListener("click", () => setBscanZoom(state.bscanZoom * 1.2));
     elements.overlayButton.addEventListener("click", () => {
       state.overlay = !state.overlay;
       updateLabels();
@@ -1521,8 +1610,17 @@
     elements.stage.addEventListener("wheel", (event) => {
       if (!currentVolume()) return;
       event.preventDefault();
+      if (event.ctrlKey) {
+        const zoomFactor = event.deltaY > 0 ? (1 / 1.1) : 1.1;
+        setBscanZoom(state.bscanZoom * zoomFactor);
+        return;
+      }
       stepSlice(event.deltaY > 0 ? 1 : -1);
     }, { passive: false });
+    elements.stage.addEventListener("dblclick", () => {
+      if (!currentVolume()) return;
+      setBscanZoom(1);
+    });
     elements.fundusStage.addEventListener("click", selectSliceFromFundus);
     elements.fundusStage.addEventListener("wheel", (event) => {
       if (!currentVolume()) return;
