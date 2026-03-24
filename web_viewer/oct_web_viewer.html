@@ -352,8 +352,8 @@
               <div class="control">
                 <label>定位显示</label>
                 <div class="segmented" id="overlayDisplayGroup">
-                  <button id="overlayLineButton" type="button" class="secondary mode-button active" data-overlay-display="line">定位线</button>
-                  <button id="overlayBoxButton" type="button" class="secondary mode-button" data-overlay-display="box">扫描框</button>
+                  <button id="overlayBoxButton" type="button" class="secondary mode-button active" data-overlay-display="box">扫描框</button>
+                  <button id="overlayLineButton" type="button" class="secondary mode-button" data-overlay-display="line">定位线</button>
                 </div>
               </div>
               <div class="viewer-controls">
@@ -441,7 +441,7 @@
       speed: 5,
       bscanZoom: 1,
       overlay: true,
-      overlayDisplay: "line",
+      overlayDisplay: "box",
       showInfo: true,
       lastPath: "",
       vendorMode: "auto",
@@ -468,7 +468,7 @@
       fundusViewCacheKey: "",
       fundusViewCacheCanvas: null,
       contourCache: new Map(),
-      overlayDisplay: "line",
+      overlayDisplay: "box",
       vendorMode: "auto",
     };
 
@@ -637,6 +637,7 @@
         const option = document.createElement("option");
         option.value = filepath;
         option.textContent = filepath;
+        option.title = filepath;
         elements.recentSelect.appendChild(option);
       });
     }
@@ -695,6 +696,38 @@
       if (persist) {
         saveUiState();
       }
+    }
+
+    function supportsBoxOverlay(volume) {
+      return Array.isArray(volume?.overlayBounds) && volume.overlayBounds.length === 4;
+    }
+
+    function supportsLineOverlay(volume) {
+      return (
+        (Array.isArray(volume?.overlaySegments) && volume.overlaySegments.length > 0)
+        || supportsBoxOverlay(volume)
+      );
+    }
+
+    function syncOverlayDisplayButtons() {
+      const volume = currentVolume();
+      const boxSupported = supportsBoxOverlay(volume);
+      const lineSupported = supportsLineOverlay(volume);
+      const effectiveMode = !volume
+        ? (state.overlayDisplay === "line" ? "line" : "box")
+        : (state.overlayDisplay === "box" && boxSupported ? "box" : "line");
+
+      overlayDisplayButtons().forEach((button) => {
+        const buttonMode = button.dataset.overlayDisplay || "line";
+        const supported = !volume
+          ? true
+          : (buttonMode === "box" ? boxSupported : lineSupported);
+        button.classList.toggle("active", buttonMode === effectiveMode);
+        button.disabled = state.busy || !supported;
+        button.title = supported
+          ? ""
+          : (buttonMode === "box" ? "当前数据没有可用扫描框" : "当前数据没有可用定位线");
+      });
     }
 
     function setStatus(message, isError = false) {
@@ -811,7 +844,7 @@
       if (volume.overlayWarning) {
         elements.fundusViewHint.textContent = volume.overlayWarning;
       } else if (displayMode === "box") {
-        elements.fundusViewHint.textContent = `当前显示方框扫描区域，红框对应 B-scan 第 ${sliceNumber} / ${volume.sliceCount} 张。`;
+        elements.fundusViewHint.textContent = `当前显示扫描范围方框，红线对应 B-scan 第 ${sliceNumber} / ${volume.sliceCount} 张。`;
       } else if (displayMode === "radial") {
         elements.fundusViewHint.textContent = `当前显示放射状扫描定位，第 ${sliceNumber} / ${volume.sliceCount} 张。`;
       } else if (displayMode === "single-line") {
@@ -824,7 +857,7 @@
 
       elements.bscanViewTitle.textContent = volume.label || "当前 B-Scan";
       elements.bscanViewHint.textContent = displayMode === "box"
-        ? `当前方框区域对应的 B-scan：${sliceNumber} / ${volume.sliceCount}`
+        ? `当前红线对应的 B-scan：${sliceNumber} / ${volume.sliceCount}`
         : `Slice ${sliceNumber} / ${volume.sliceCount}`;
     }
 
@@ -836,6 +869,29 @@
     }
 
     function getOverlayDisplayMode(volume) {
+      if (state.overlayDisplay === "box" && supportsBoxOverlay(volume)) {
+        return "box";
+      }
+      if (state.overlayDisplay === "line" && supportsLineOverlay(volume)) {
+        const segments = Array.isArray(volume?.overlaySegments) ? volume.overlaySegments : [];
+        if (segments.length < 2) {
+          return "single-line";
+        }
+
+        const angles = segments
+          .map((segment) => Math.abs(Number(segment?.angleDegrees ?? 0)) % 180)
+          .filter((value) => Number.isFinite(value));
+        if (!angles.length) {
+          return "single-line";
+        }
+
+        const angleSpread = Math.max(...angles) - Math.min(...angles);
+        if (angleSpread > 25) {
+          return "radial";
+        }
+        return "multi-line";
+      }
+
       const overlayMode = String(volume?.overlayMode || "");
       const projectionMode = String(volume?.projectionMode || "");
       if (
@@ -886,6 +942,7 @@
       elements.zoomInButton.disabled = !volume;
       elements.overlayButton.disabled = !volume;
       elements.infoButton.disabled = !volume;
+      syncOverlayDisplayButtons();
       elements.sliceSlider.max = volume ? String(Math.max(0, volume.sliceCount - 1)) : "0";
       elements.sliceSlider.value = volume ? String(Math.min(state.sliceIndex, volume.sliceCount - 1)) : "0";
       elements.emptyState.style.display = volume ? "none" : "block";
@@ -1286,6 +1343,42 @@
       ctx2d.restore();
     }
 
+    function getActiveBoxSegment(volume) {
+      if (!Array.isArray(volume?.overlayBounds) || volume.overlayBounds.length !== 4) {
+        return null;
+      }
+
+      const segments = Array.isArray(volume?.overlaySegments) ? volume.overlaySegments : [];
+      const segmentCount = Math.min(volume?.sliceCount || segments.length, segments.length);
+      const activeIndex = Math.max(0, Number(state.sliceIndex) || 0);
+      if (segmentCount > 0) {
+        return segments[Math.min(activeIndex, segmentCount - 1)] || null;
+      }
+
+      const [left, top, boxWidth, boxHeight] = volume.overlayBounds.map((value) => Number(value));
+      const right = left + boxWidth;
+      const bottom = top + boxHeight;
+      const sliceCount = Math.max(1, Number(volume?.sliceCount) || 1);
+      const ratio = sliceCount <= 1 ? 0.5 : Math.min(1, Math.max(0, activeIndex / (sliceCount - 1)));
+      const horizontalSweep = boxHeight >= boxWidth;
+
+      if (horizontalSweep) {
+        const y = top + ((bottom - top) * ratio);
+        return {
+          start: [left, y],
+          end: [right, y],
+          angleDegrees: 0,
+        };
+      }
+
+      const x = left + ((right - left) * ratio);
+      return {
+        start: [x, top],
+        end: [x, bottom],
+        angleDegrees: 90,
+      };
+    }
+
     function drawFundusOverlay(volume) {
       const baseLineWidth = Math.max(1.25, Math.min(elements.fundusCanvas.width, elements.fundusCanvas.height) / 480);
       const displayMode = getOverlayDisplayMode(volume);
@@ -1295,8 +1388,8 @@
         const right = left + boxWidth;
         const bottom = top + boxHeight;
         const edgeWidth = baseLineWidth * 1.35;
-        const topWidth = baseLineWidth * 1.2;
         const cornerRadius = Math.max(2.5, baseLineWidth * 1.85);
+        const activeSegment = getActiveBoxSegment(volume);
         fundusCtx.save();
         fundusCtx.lineJoin = "round";
         fundusCtx.lineCap = "round";
@@ -1307,33 +1400,43 @@
         fundusCtx.lineTo(left, bottom);
         fundusCtx.lineTo(right, bottom);
         fundusCtx.lineTo(right, top);
+        fundusCtx.closePath();
         fundusCtx.stroke();
 
-        fundusCtx.strokeStyle = "rgba(248, 113, 113, 0.98)";
-        fundusCtx.lineWidth = topWidth;
-        fundusCtx.beginPath();
-        fundusCtx.moveTo(left, top);
-        fundusCtx.lineTo(right, top);
-        fundusCtx.stroke();
-
-        fundusCtx.fillStyle = "rgba(253, 224, 71, 0.98)";
-        fundusCtx.beginPath();
-        fundusCtx.arc(left, top, cornerRadius, 0, Math.PI * 2);
-        fundusCtx.arc(right, top, cornerRadius, 0, Math.PI * 2);
-        fundusCtx.fill();
         fundusCtx.restore();
+
+        if (activeSegment) {
+          drawSegment(fundusCtx, activeSegment, {
+            lineWidth: baseLineWidth * 1.9,
+            strokeStyle: "rgba(248, 113, 113, 0.98)",
+            showEndpoints: true,
+            endpointColor: "#fde68a",
+          });
+
+          const labelX = (Number(activeSegment.start[0]) + Number(activeSegment.end[0])) / 2;
+          const labelY = (Number(activeSegment.start[1]) + Number(activeSegment.end[1])) / 2;
+          fundusCtx.save();
+          fundusCtx.font = `${Math.max(12, Math.round(baseLineWidth * 7))}px "Segoe UI", sans-serif`;
+          fundusCtx.fillStyle = "#f8fafc";
+          fundusCtx.strokeStyle = "rgba(2, 6, 23, 0.75)";
+          fundusCtx.lineWidth = 3;
+          fundusCtx.strokeText(`B${state.sliceIndex + 1}`, labelX + 10, labelY - 10);
+          fundusCtx.fillText(`B${state.sliceIndex + 1}`, labelX + 10, labelY - 10);
+          fundusCtx.restore();
+        }
         return;
       }
 
       const segments = Array.isArray(volume?.overlaySegments) ? volume.overlaySegments : [];
-      if (!segments.length) return;
+      const syntheticSegment = (!segments.length && supportsBoxOverlay(volume)) ? getActiveBoxSegment(volume) : null;
+      if (!segments.length && !syntheticSegment) return;
 
       const segmentCount = Math.min(volume?.sliceCount || segments.length, segments.length);
       const activeIndex = Math.max(0, Math.min(state.sliceIndex, Math.max(0, segmentCount - 1)));
-      const activeSegment = segments[activeIndex];
+      const activeSegment = syntheticSegment || segments[activeIndex];
       if (!activeSegment) return;
 
-      if (displayMode === "radial" || displayMode === "multi-line") {
+      if (!syntheticSegment && (displayMode === "radial" || displayMode === "multi-line")) {
         for (let index = 0; index < segmentCount; index += 1) {
           drawSegment(fundusCtx, segments[index], {
             lineWidth: baseLineWidth,
@@ -1412,7 +1515,27 @@
 
       const segments = Array.isArray(volume.overlaySegments) ? volume.overlaySegments : [];
       const segmentCount = Math.min(volume.sliceCount || segments.length, segments.length);
-      if (!segmentCount) return;
+      const displayMode = getOverlayDisplayMode(volume);
+      if (!segmentCount && !supportsBoxOverlay(volume)) return;
+
+      if (!segmentCount && Array.isArray(volume.overlayBounds) && volume.overlayBounds.length === 4) {
+        const [left, top, boxWidth, boxHeight] = volume.overlayBounds.map((value) => Number(value));
+        const width = Math.max(1, boxWidth);
+        const height = Math.max(1, boxHeight);
+        const relativeX = Math.min(1, Math.max(0, (point[0] - left) / width));
+        const relativeY = Math.min(1, Math.max(0, (point[1] - top) / height));
+        const useVerticalAxis = height >= width;
+        const ratio = useVerticalAxis ? relativeY : relativeX;
+        const sliceCount = Math.max(1, Number(volume.sliceCount) || 1);
+        const nextIndex = Math.max(0, Math.min(sliceCount - 1, Math.round(ratio * (sliceCount - 1))));
+        if (nextIndex < 0 || nextIndex === state.sliceIndex) return;
+        state.sliceIndex = nextIndex;
+        elements.sliceSlider.value = String(state.sliceIndex);
+        updateLabels();
+        updateViewInfo();
+        scheduleDraw();
+        return;
+      }
 
       let bestIndex = -1;
       let bestDistance = Number.POSITIVE_INFINITY;
@@ -1588,7 +1711,7 @@
       const sourceKind = payload?.sourceKind || "path";
       const recentPath = payload?.recentPath || "";
       if (sourceKind === "path") {
-        elements.pathInput.value = recentPath || options.fallbackPath || payload.sourcePath || "";
+        elements.pathInput.value = payload.sourcePath || recentPath || options.fallbackPath || "";
         if (elements.pathInput.value.trim()) {
           saveRecentFile(elements.pathInput.value.trim());
         }
@@ -1704,9 +1827,11 @@
       state.bscanZoom = 1;
       fitCanvasDisplays();
       state.overlay = true;
+      state.overlayDisplay = DEFAULT_UI_STATE.overlayDisplay;
       state.showInfo = true;
       updateLabels();
       updateViewInfo();
+      syncOverlayDisplayButtons();
       saveUiState();
       scheduleDraw();
     }
@@ -1718,28 +1843,61 @@
       elements.speedSlider.value = String(persisted.speed ?? DEFAULT_UI_STATE.speed);
       state.bscanZoom = clampBscanZoom(persisted.bscanZoom ?? DEFAULT_UI_STATE.bscanZoom);
       state.overlay = Boolean(persisted.overlay ?? DEFAULT_UI_STATE.overlay);
+      state.overlayDisplay = persisted.overlayDisplay === "line" ? "line" : DEFAULT_UI_STATE.overlayDisplay;
       state.showInfo = Boolean(persisted.showInfo ?? DEFAULT_UI_STATE.showInfo);
       state.vendorMode = VENDOR_MODE_VALUES.includes(String(persisted.vendorMode || "")) ? String(persisted.vendorMode) : DEFAULT_UI_STATE.vendorMode;
       if (!elements.pathInput.value) {
         elements.pathInput.value = persisted.lastPath || "";
       }
       syncVendorModeButtons();
+      syncOverlayDisplayButtons();
       updateLabels();
       updateViewInfo();
     }
 
+    async function pickLocalFile() {
+      setBusy(true, "正在打开本地文件选择器...");
+      try {
+        const payload = await fetchJson(`/api/pick-file?vendor=${encodeURIComponent(state.vendorMode)}`);
+        if (payload?.cancelled) {
+          setStatus("已取消选择文件。");
+          return;
+        }
+        applyLoadedPayload(payload);
+      } catch (error) {
+        if (!getVendorModeConfig(state.vendorMode).allowUpload) {
+          setStatus(error.message || SHIWEI_UPLOAD_HINT, true);
+          return;
+        }
+        setStatus(`原生选文件失败，已切换浏览器上传：${error.message}`, true);
+        elements.fileInput.click();
+      } finally {
+        setBusy(false);
+      }
+    }
+
     elements.browseButton.addEventListener("click", () => {
-      if (!getVendorModeConfig(state.vendorMode).allowUpload) {
-        setStatus(SHIWEI_UPLOAD_HINT, true);
+      if (state.vendorMode === "shiwei") {
+        setStatus("视微模式请直接输入目录路径，或输入目录中的 DICOM 文件路径后点击“加载文件”。", true);
         return;
       }
-      elements.fileInput.click();
+      pickLocalFile();
     });
     elements.fileInput.addEventListener("change", () => {
       const [file] = elements.fileInput.files || [];
       uploadSelectedFile(file);
     });
     elements.loadButton.addEventListener("click", loadPath);
+    overlayDisplayButtons().forEach((button) => {
+      button.addEventListener("click", () => {
+        const nextMode = button.dataset.overlayDisplay === "box" ? "box" : "line";
+        state.overlayDisplay = nextMode;
+        syncOverlayDisplayButtons();
+        saveUiState();
+        updateViewInfo();
+        scheduleDraw();
+      });
+    });
     vendorModeButtons().forEach((button) => {
       button.addEventListener("click", () => {
         setVendorMode(button.dataset.vendorMode || "auto");
