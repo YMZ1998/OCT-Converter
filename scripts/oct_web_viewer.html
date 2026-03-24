@@ -64,6 +64,39 @@
       min-width: 320px;
     }
 
+    .modebar {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .modebar-label {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .segmented {
+      display: inline-flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .mode-button {
+      background: var(--panel-2);
+      color: var(--text);
+      border-color: var(--border);
+    }
+
+    .mode-button.active {
+      background: var(--accent);
+      color: #082f49;
+      border-color: transparent;
+      box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.22) inset;
+    }
+
     input[type="text"], select, input[type="range"] { width: 100%; }
     input[type="text"], select {
       padding: 10px 12px;
@@ -261,6 +294,19 @@
         <button id="refreshButton" class="secondary">刷新状态</button>
         <button id="resetViewButton" class="secondary">重置视图</button>
       </div>
+      <div class="modebar">
+        <div class="modebar-label">加载模式</div>
+        <div class="segmented" id="vendorModeGroup">
+          <button type="button" class="secondary mode-button active" data-vendor-mode="auto">自动识别</button>
+          <button type="button" class="secondary mode-button" data-vendor-mode="heidelberg">海德堡 E2E</button>
+          <button type="button" class="secondary mode-button" data-vendor-mode="topcon">拓普康 FDA/FDS</button>
+          <button type="button" class="secondary mode-button" data-vendor-mode="zeiss">蔡司 IMG</button>
+          <button type="button" class="secondary mode-button" data-vendor-mode="optovue">Optovue OCT</button>
+          <button type="button" class="secondary mode-button" data-vendor-mode="bioptigen">Bioptigen OCT</button>
+          <button type="button" class="secondary mode-button" data-vendor-mode="dicom">通用 DICOM</button>
+          <button type="button" class="secondary mode-button" data-vendor-mode="shiwei">视微</button>
+        </div>
+      </div>
       <div id="status" class="status">等待加载 OCT 文件。</div>
     </div>
 
@@ -303,6 +349,13 @@
                 <input id="sliceSlider" type="range" min="0" max="0" value="0">
                 <div id="sliceLabel" class="hint">Slice 0 / 0</div>
               </div>
+              <div class="control">
+                <label>定位显示</label>
+                <div class="segmented" id="overlayDisplayGroup">
+                  <button id="overlayLineButton" type="button" class="secondary mode-button active" data-overlay-display="line">定位线</button>
+                  <button id="overlayBoxButton" type="button" class="secondary mode-button" data-overlay-display="box">扫描框</button>
+                </div>
+              </div>
               <div class="viewer-controls">
                 <button id="prevButton" class="secondary">上一张</button>
                 <button id="playButton" class="secondary">播放</button>
@@ -321,7 +374,7 @@
                 <div class="hint view-hint" id="fundusViewHint">左侧显示定位图，点击定位线可跳转到对应切片。</div>
                 <div class="canvas-stage" id="fundusStage">
                   <canvas id="fundusCanvas" width="1024" height="1024"></canvas>
-                  <div id="fundusEmptyState" class="empty">加载后会在这里显示定位图和扫描定位线。</div>
+                  <div id="fundusEmptyState" class="empty"></div>
                 </div>
               </div>
 
@@ -388,8 +441,10 @@
       speed: 5,
       bscanZoom: 1,
       overlay: true,
+      overlayDisplay: "line",
       showInfo: true,
       lastPath: "",
+      vendorMode: "auto",
     };
 
     const state = {
@@ -413,6 +468,8 @@
       fundusViewCacheKey: "",
       fundusViewCacheCanvas: null,
       contourCache: new Map(),
+      overlayDisplay: "line",
+      vendorMode: "auto",
     };
 
     const elements = {
@@ -420,6 +477,10 @@
       browseButton: document.getElementById("browseButton"),
       loadButton: document.getElementById("loadButton"),
       fileInput: document.getElementById("fileInput"),
+      vendorModeGroup: document.getElementById("vendorModeGroup"),
+      overlayDisplayGroup: document.getElementById("overlayDisplayGroup"),
+      overlayLineButton: document.getElementById("overlayLineButton"),
+      overlayBoxButton: document.getElementById("overlayBoxButton"),
       refreshButton: document.getElementById("refreshButton"),
       resetViewButton: document.getElementById("resetViewButton"),
       status: document.getElementById("status"),
@@ -465,6 +526,72 @@
     const ctx = elements.octCanvas.getContext("2d");
     const fundusCtx = elements.fundusCanvas.getContext("2d");
 
+    const VENDOR_MODE_CONFIG = {
+      auto: {
+        label: "自动识别",
+        accept: ".fds,.FDS,.fda,.FDA,.e2e,.E2E,.img,.IMG,.oct,.OCT,.dcm,.DCM,.dicom,.DICOM",
+        pathHint: "输入 OCT 文件路径，例如 D:\\data\\sample.e2e",
+        allowUpload: true,
+      },
+      heidelberg: {
+        label: "海德堡 E2E",
+        accept: ".e2e,.E2E",
+        pathHint: "输入海德堡 E2E 文件路径，例如 D:\\data\\sample.e2e",
+        allowUpload: true,
+      },
+      topcon: {
+        label: "拓普康 FDA/FDS",
+        accept: ".fda,.FDA,.fds,.FDS",
+        pathHint: "输入拓普康 FDA/FDS 文件路径，例如 D:\\data\\sample.fda",
+        allowUpload: true,
+      },
+      zeiss: {
+        label: "蔡司 IMG",
+        accept: ".img,.IMG",
+        pathHint: "输入蔡司 IMG 文件路径，例如 D:\\data\\sample.img",
+        allowUpload: true,
+      },
+      optovue: {
+        label: "Optovue OCT",
+        accept: ".oct",
+        pathHint: "输入 Optovue OCT 文件路径，例如 D:\\data\\sample.oct",
+        allowUpload: true,
+      },
+      bioptigen: {
+        label: "Bioptigen OCT",
+        accept: ".OCT",
+        pathHint: "输入 Bioptigen OCT 文件路径，例如 D:\\data\\sample.OCT",
+        allowUpload: true,
+      },
+      dicom: {
+        label: "通用 DICOM",
+        accept: ".dcm,.DCM,.dicom,.DICOM",
+        pathHint: "输入通用 DICOM 文件路径，例如 D:\\data\\sample.dcm",
+        allowUpload: true,
+      },
+      shiwei: {
+        label: "视微",
+        accept: ".dcm,.DCM,.dicom,.DICOM",
+        pathHint: "输入视微 DICOM 目录，或该目录中的任一配套 DICOM 文件路径",
+        allowUpload: false,
+      },
+    };
+
+    const VENDOR_MODE_VALUES = Object.keys(VENDOR_MODE_CONFIG);
+    const SHIWEI_UPLOAD_HINT = "视微模式不支持单文件上传，请直接输入目录路径，或输入目录中的任一 DICOM 文件路径后点击“加载文件”。";
+
+    function vendorModeButtons() {
+      return Array.from(elements.vendorModeGroup?.querySelectorAll("[data-vendor-mode]") || []);
+    }
+
+    function overlayDisplayButtons() {
+      return Array.from(elements.overlayDisplayGroup?.querySelectorAll("[data-overlay-display]") || []);
+    }
+
+    function getVendorModeConfig(mode) {
+      return VENDOR_MODE_CONFIG[mode] || VENDOR_MODE_CONFIG.auto;
+    }
+
     function getUiState() {
       try {
         return { ...DEFAULT_UI_STATE, ...(JSON.parse(localStorage.getItem(STORAGE_KEYS.uiState)) || {}) };
@@ -482,8 +609,10 @@
         speed: Number(elements.speedSlider.value),
         bscanZoom: Number(state.bscanZoom),
         overlay: state.overlay,
+        overlayDisplay: state.overlayDisplay || DEFAULT_UI_STATE.overlayDisplay,
         showInfo: state.showInfo,
         lastPath: currentPath || persisted.lastPath || "",
+        vendorMode: state.vendorMode || "auto",
       };
       localStorage.setItem(STORAGE_KEYS.uiState, JSON.stringify(payload));
     }
@@ -534,8 +663,37 @@
           element.disabled = isBusy;
         }
       });
+      vendorModeButtons().forEach((button) => {
+        button.disabled = isBusy;
+      });
+      overlayDisplayButtons().forEach((button) => {
+        button.disabled = isBusy;
+      });
       if (message) {
         setStatus(message);
+      }
+    }
+
+    function getVendorModeLabel(mode) {
+      return getVendorModeConfig(mode).label;
+    }
+
+    function syncVendorModeButtons() {
+      const vendorConfig = getVendorModeConfig(state.vendorMode);
+      vendorModeButtons().forEach((button) => {
+        button.classList.toggle("active", button.dataset.vendorMode === state.vendorMode);
+      });
+      elements.pathInput.placeholder = vendorConfig.pathHint;
+      elements.fileInput.accept = vendorConfig.accept;
+      elements.fileInput.value = "";
+    }
+
+    function setVendorMode(mode, { persist = true } = {}) {
+      const normalized = VENDOR_MODE_VALUES.includes(mode) ? mode : "auto";
+      state.vendorMode = normalized;
+      syncVendorModeButtons();
+      if (persist) {
+        saveUiState();
       }
     }
 
@@ -678,8 +836,12 @@
     }
 
     function getOverlayDisplayMode(volume) {
+      const overlayMode = String(volume?.overlayMode || "");
       const projectionMode = String(volume?.projectionMode || "");
-      if (projectionMode.endsWith("-rect") || projectionMode.includes("square-raster")) {
+      if (
+        overlayMode.includes("bounding-box")
+        || projectionMode.includes("bounding-box")
+      ) {
         return "box";
       }
       if (projectionMode.endsWith("-line")) {
@@ -1125,24 +1287,53 @@
     }
 
     function drawFundusOverlay(volume) {
+      const baseLineWidth = Math.max(1.25, Math.min(elements.fundusCanvas.width, elements.fundusCanvas.height) / 480);
+      const displayMode = getOverlayDisplayMode(volume);
+
+      if (displayMode === "box" && Array.isArray(volume?.overlayBounds) && volume.overlayBounds.length === 4) {
+        const [left, top, boxWidth, boxHeight] = volume.overlayBounds.map((value) => Number(value));
+        const right = left + boxWidth;
+        const bottom = top + boxHeight;
+        const edgeWidth = baseLineWidth * 1.35;
+        const topWidth = baseLineWidth * 1.2;
+        const cornerRadius = Math.max(2.5, baseLineWidth * 1.85);
+        fundusCtx.save();
+        fundusCtx.lineJoin = "round";
+        fundusCtx.lineCap = "round";
+        fundusCtx.strokeStyle = "rgba(56, 189, 248, 0.98)";
+        fundusCtx.lineWidth = edgeWidth;
+        fundusCtx.beginPath();
+        fundusCtx.moveTo(left, top);
+        fundusCtx.lineTo(left, bottom);
+        fundusCtx.lineTo(right, bottom);
+        fundusCtx.lineTo(right, top);
+        fundusCtx.stroke();
+
+        fundusCtx.strokeStyle = "rgba(248, 113, 113, 0.98)";
+        fundusCtx.lineWidth = topWidth;
+        fundusCtx.beginPath();
+        fundusCtx.moveTo(left, top);
+        fundusCtx.lineTo(right, top);
+        fundusCtx.stroke();
+
+        fundusCtx.fillStyle = "rgba(253, 224, 71, 0.98)";
+        fundusCtx.beginPath();
+        fundusCtx.arc(left, top, cornerRadius, 0, Math.PI * 2);
+        fundusCtx.arc(right, top, cornerRadius, 0, Math.PI * 2);
+        fundusCtx.fill();
+        fundusCtx.restore();
+        return;
+      }
+
       const segments = Array.isArray(volume?.overlaySegments) ? volume.overlaySegments : [];
       if (!segments.length) return;
 
       const segmentCount = Math.min(volume?.sliceCount || segments.length, segments.length);
       const activeIndex = Math.max(0, Math.min(state.sliceIndex, Math.max(0, segmentCount - 1)));
-      const baseLineWidth = Math.max(1.25, Math.min(elements.fundusCanvas.width, elements.fundusCanvas.height) / 480);
-      const displayMode = getOverlayDisplayMode(volume);
       const activeSegment = segments[activeIndex];
       if (!activeSegment) return;
 
-      if (displayMode === "box" && Array.isArray(volume?.overlayBounds) && volume.overlayBounds.length === 4) {
-        const [left, top, boxWidth, boxHeight] = volume.overlayBounds.map((value) => Number(value));
-        fundusCtx.save();
-        fundusCtx.strokeStyle = "rgba(56, 189, 248, 0.95)";
-        fundusCtx.lineWidth = baseLineWidth * 1.4;
-        fundusCtx.strokeRect(left, top, boxWidth, boxHeight);
-        fundusCtx.restore();
-      } else if (displayMode === "radial" || displayMode === "multi-line") {
+      if (displayMode === "radial" || displayMode === "multi-line") {
         for (let index = 0; index < segmentCount; index += 1) {
           drawSegment(fundusCtx, segments[index], {
             lineWidth: baseLineWidth,
@@ -1417,9 +1608,11 @@
         setStatus("请先输入一个 OCT 文件路径。", true);
         return;
       }
-      setBusy(true, "正在读取 OCT 文件，请稍候...");
+      setBusy(true, `正在以“${getVendorModeLabel(state.vendorMode)}”模式读取数据，请稍候...`);
       try {
-        const payload = await fetchJson(`/api/load?path=${encodeURIComponent(filepath)}`);
+        const payload = await fetchJson(
+          `/api/load?path=${encodeURIComponent(filepath)}&vendor=${encodeURIComponent(state.vendorMode)}`,
+        );
         applyLoadedPayload(payload, { fallbackPath: filepath });
       } catch (error) {
         setStatus(error.message, true);
@@ -1432,12 +1625,17 @@
       if (!file) {
         return;
       }
+      if (!getVendorModeConfig(state.vendorMode).allowUpload) {
+        setStatus(SHIWEI_UPLOAD_HINT, true);
+        elements.fileInput.value = "";
+        return;
+      }
 
       const formData = new FormData();
       formData.append("file", file, file.name);
       setBusy(true, `正在上传文件：${file.name}`);
       try {
-        const payload = await fetchJson("/api/upload", {
+        const payload = await fetchJson(`/api/upload?vendor=${encodeURIComponent(state.vendorMode)}`, {
           method: "POST",
           body: formData,
         });
@@ -1521,14 +1719,20 @@
       state.bscanZoom = clampBscanZoom(persisted.bscanZoom ?? DEFAULT_UI_STATE.bscanZoom);
       state.overlay = Boolean(persisted.overlay ?? DEFAULT_UI_STATE.overlay);
       state.showInfo = Boolean(persisted.showInfo ?? DEFAULT_UI_STATE.showInfo);
+      state.vendorMode = VENDOR_MODE_VALUES.includes(String(persisted.vendorMode || "")) ? String(persisted.vendorMode) : DEFAULT_UI_STATE.vendorMode;
       if (!elements.pathInput.value) {
         elements.pathInput.value = persisted.lastPath || "";
       }
+      syncVendorModeButtons();
       updateLabels();
       updateViewInfo();
     }
 
     elements.browseButton.addEventListener("click", () => {
+      if (!getVendorModeConfig(state.vendorMode).allowUpload) {
+        setStatus(SHIWEI_UPLOAD_HINT, true);
+        return;
+      }
       elements.fileInput.click();
     });
     elements.fileInput.addEventListener("change", () => {
@@ -1536,6 +1740,12 @@
       uploadSelectedFile(file);
     });
     elements.loadButton.addEventListener("click", loadPath);
+    vendorModeButtons().forEach((button) => {
+      button.addEventListener("click", () => {
+        setVendorMode(button.dataset.vendorMode || "auto");
+        setStatus(`当前加载模式：${getVendorModeLabel(state.vendorMode)}。`);
+      });
+    });
     elements.refreshButton.addEventListener("click", () => {
       setBusy(true, "正在刷新状态...");
       refreshState()

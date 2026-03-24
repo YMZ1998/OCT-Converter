@@ -24,27 +24,26 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from oct_converter.image_types import FundusImageWithMetaData
 from oct_converter.readers import BOCT, Dicom, E2E, FDA, FDS, IMG, POCT
-
-SUPPORTED_EXTENSIONS = (".fds", ".fda", ".e2e", ".img", ".oct", ".OCT", ".dcm", ".dicom")
-NORMALIZED_SUPPORTED_EXTENSIONS = frozenset(extension.lower() for extension in SUPPORTED_EXTENSIONS)
-FILE_DIALOG_TYPES = [
-    ("Supported OCT files", "*.fds *.FDS *.fda *.FDA *.e2e *.E2E *.img *.IMG *.oct *.OCT *.dcm *.DCM *.dicom *.DICOM"),
-    ("Topcon FDS", "*.fds *.FDS"),
-    ("Topcon FDA", "*.fda *.FDA"),
-    ("Heidelberg E2E", "*.e2e *.E2E"),
-    ("Zeiss IMG", "*.img *.IMG"),
-    ("Optovue OCT", "*.oct"),
-    ("Bioptigen OCT", "*.OCT"),
-    ("DICOM", "*.dcm *.DCM *.dicom *.DICOM"),
-    ("All files", "*.*"),
-]
+from oct_viewer_vendor_modes import (
+    FILE_DIALOG_TYPES,
+    NORMALIZED_SUPPORTED_EXTENSIONS,
+    SHIWEI_UPLOAD_HINT,
+    SUPPORTED_EXTENSIONS,
+    VENDOR_MODE_FILE_DIALOG_TYPES,
+    VENDOR_MODE_LABELS,
+    build_vendor_validation_error,
+    is_supported_suffix_for_vendor,
+    normalize_vendor_mode,
+)
+from parse_shiwei_location import load_shiwei_oct_dataset, resolve_input_files
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local OCT web viewer.")
     parser.add_argument("path", nargs="?", help="Optional OCT file to load at startup.")
-    parser.add_argument("--host", default="127.0.0.1", help="Host to bind.")
+    parser.add_argument("--host", default="192.168.0.90", help="Host to bind.")
     parser.add_argument("--port", type=int, default=8765, help="Port to bind.")
     parser.add_argument("--img-rows", type=int, default=1024, help="Rows for Zeiss .img files.")
     parser.add_argument("--img-cols", type=int, default=512, help="Cols for Zeiss .img files.")
@@ -55,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--no-browser",
-        action="store_true",
+        default=True,
         help="Do not auto-open the browser.",
     )
     return parser.parse_args()
@@ -418,26 +417,28 @@ class ViewerState:
         self.lock = threading.Lock()
         self.uploaded_file_path: Path | None = None
 
-    def load(self, filepath: str) -> dict[str, Any]:
+    def load(self, filepath: str, vendor_mode: str = "auto") -> dict[str, Any]:
+        vendor_mode = normalize_vendor_mode(vendor_mode)
         path = self._resolve_path(filepath)
         payload = self._load_path(
             path,
             source_path=str(path),
             source_kind="path",
             recent_path=str(path),
+            vendor_mode=vendor_mode,
         )
         self._cleanup_uploaded_file()
         return payload
 
-    def load_uploaded_file(self, filename: str, fileobj: Any) -> dict[str, Any]:
+    def load_uploaded_file(self, filename: str, fileobj: Any, vendor_mode: str = "auto") -> dict[str, Any]:
+        vendor_mode = normalize_vendor_mode(vendor_mode)
         upload_name = Path(filename or "").name.strip()
         if not upload_name:
             raise ValueError("Missing uploaded filename.")
 
-        suffix = Path(upload_name).suffix
-        normalized_suffix = suffix.lower()
-        if normalized_suffix not in NORMALIZED_SUPPORTED_EXTENSIONS:
-            raise ValueError(f"Unsupported file type: {suffix or upload_name}")
+        self._validate_upload_request(upload_name, vendor_mode)
+        upload_path = Path(upload_name)
+        suffix = upload_path.suffix
 
         with tempfile.NamedTemporaryFile(delete=False, prefix="oct-web-viewer-", suffix=suffix) as handle:
             shutil.copyfileobj(fileobj, handle)
@@ -452,6 +453,7 @@ class ViewerState:
                 source_path=upload_name,
                 source_kind="upload",
                 recent_path="",
+                vendor_mode=vendor_mode,
             )
         except Exception:
             temp_path.unlink(missing_ok=True)
@@ -473,41 +475,31 @@ class ViewerState:
         source_path: str,
         source_kind: str,
         recent_path: str,
+        vendor_mode: str = "auto",
     ) -> dict[str, Any]:
-        if not path.exists():
-            raise FileNotFoundError(path)
+        normalized_mode = normalize_vendor_mode(vendor_mode)
+        self._validate_load_request(path, normalized_mode)
 
-        reader = self._create_reader(path)
-        volumes = as_list(self._read_oct_volumes(reader))
-        if not volumes:
-            raise ValueError("No OCT volumes were extracted from this file.")
+        source_meta = {
+            "source_path": source_path,
+            "source_kind": source_kind,
+            "recent_path": recent_path,
+        }
+        dataset = self._load_dataset_from_path(path, normalized_mode, source_meta)
+        return self._set_dataset_and_build_payload(dataset)
 
-        fundus_images = as_list(self._safe_read_fundus(reader))
-        overlay_infos = self._build_overlay_infos(reader, volumes, fundus_images)
-        dataset = LoadedDataset(
-            source_path=source_path,
-            source_kind=source_kind,
-            recent_path=recent_path,
-            reader_name=reader.__class__.__name__,
-            volumes=volumes,
-            fundus_images=fundus_images,
-            overlay_infos=overlay_infos,
-        )
-        with self.lock:
-            self.dataset = dataset
-        return self.build_state_payload()
-
-    def pick_and_load(self) -> dict[str, Any]:
-        filepath = self.pick_file()
+    def pick_and_load(self, vendor_mode: str = "auto") -> dict[str, Any]:
+        normalized_mode = normalize_vendor_mode(vendor_mode)
+        filepath = self.pick_file(normalized_mode)
         if not filepath:
             payload = self.build_state_payload()
             payload["cancelled"] = True
             return payload
-        payload = self.load(filepath)
+        payload = self.load(filepath, vendor_mode=normalized_mode)
         payload["cancelled"] = False
         return payload
 
-    def pick_file(self) -> str:
+    def pick_file(self, vendor_mode: str = "auto") -> str:
         try:
             import tkinter as tk
             from tkinter import filedialog
@@ -520,7 +512,7 @@ class ViewerState:
         try:
             selected = filedialog.askopenfilename(
                 title="Select an OCT file",
-                filetypes=FILE_DIALOG_TYPES,
+                filetypes=VENDOR_MODE_FILE_DIALOG_TYPES.get(normalize_vendor_mode(vendor_mode), FILE_DIALOG_TYPES),
             )
         finally:
             root.destroy()
@@ -620,6 +612,8 @@ class ViewerState:
         return {"sliceIndex": slice_index, "contours": payload}
 
     def _create_reader(self, path: Path) -> Any:
+        if path.is_dir():
+            raise ValueError(f"Unsupported directory input: {path}")
         suffix = path.suffix
         suffix_lower = suffix.lower()
         if suffix_lower == ".fds":
@@ -643,6 +637,93 @@ class ViewerState:
         if not path.is_absolute():
             path = Path.cwd() / path
         return path.resolve()
+
+    def _validate_vendor_selection(self, path: Path, vendor_mode: str) -> None:
+        normalized_mode = normalize_vendor_mode(vendor_mode)
+        if normalized_mode == "auto":
+            if path.is_dir():
+                raise ValueError(f"Unsupported directory input: {path}")
+            return
+        if normalized_mode == "shiwei":
+            if path.is_dir():
+                return
+            if is_supported_suffix_for_vendor(path, normalized_mode):
+                return
+            raise ValueError(build_vendor_validation_error(path, normalized_mode))
+        if path.is_dir():
+            label = VENDOR_MODE_LABELS.get(normalized_mode, normalized_mode)
+            raise ValueError(f"当前已选择“{label}”，请直接选择对应文件，不要选择目录。")
+        if not is_supported_suffix_for_vendor(path, normalized_mode):
+            raise ValueError(build_vendor_validation_error(path, normalized_mode))
+
+    def _validate_load_request(self, path: Path, vendor_mode: str) -> None:
+        if not path.exists():
+            raise FileNotFoundError(path)
+        self._validate_vendor_selection(path, vendor_mode)
+
+    def _validate_upload_request(self, upload_name: str, vendor_mode: str) -> None:
+        if vendor_mode == "shiwei":
+            raise ValueError(SHIWEI_UPLOAD_HINT)
+
+        upload_path = Path(upload_name)
+        suffix = upload_path.suffix
+        normalized_suffix = suffix.lower()
+        if normalized_suffix not in NORMALIZED_SUPPORTED_EXTENSIONS:
+            raise ValueError(f"Unsupported file type: {suffix or upload_name}")
+        self._validate_vendor_selection(upload_path, vendor_mode)
+
+    def _load_dataset_from_path(
+        self,
+        path: Path,
+        vendor_mode: str,
+        source_meta: dict[str, str],
+    ) -> LoadedDataset:
+        shiwei_dataset = self._try_load_shiwei_dataset(path, vendor_mode=vendor_mode)
+        if shiwei_dataset is not None:
+            return self._build_shiwei_loaded_dataset(shiwei_dataset, source_meta)
+        return self._build_reader_loaded_dataset(path, source_meta)
+
+    def _build_shiwei_loaded_dataset(
+        self,
+        shiwei_dataset: dict[str, Any],
+        source_meta: dict[str, str],
+    ) -> LoadedDataset:
+        return LoadedDataset(
+            source_path=source_meta["source_path"],
+            source_kind=source_meta["source_kind"],
+            recent_path=source_meta["recent_path"],
+            reader_name="ShiweiDicomDataset",
+            volumes=[shiwei_dataset["volume"]],
+            fundus_images=[shiwei_dataset["fundus"]],
+            overlay_infos=self._build_shiwei_overlay_infos(shiwei_dataset),
+        )
+
+    def _build_reader_loaded_dataset(
+        self,
+        path: Path,
+        source_meta: dict[str, str],
+    ) -> LoadedDataset:
+        reader = self._create_reader(path)
+        volumes = as_list(self._read_oct_volumes(reader))
+        if not volumes:
+            raise ValueError("No OCT volumes were extracted from this file.")
+
+        fundus_images = as_list(self._safe_read_fundus(reader))
+        overlay_infos = self._build_overlay_infos(reader, volumes, fundus_images)
+        return LoadedDataset(
+            source_path=source_meta["source_path"],
+            source_kind=source_meta["source_kind"],
+            recent_path=source_meta["recent_path"],
+            reader_name=reader.__class__.__name__,
+            volumes=volumes,
+            fundus_images=fundus_images,
+            overlay_infos=overlay_infos,
+        )
+
+    def _set_dataset_and_build_payload(self, dataset: LoadedDataset) -> dict[str, Any]:
+        with self.lock:
+            self.dataset = dataset
+        return self.build_state_payload()
 
     def _cleanup_uploaded_file(self) -> None:
         if self.uploaded_file_path:
@@ -677,6 +758,68 @@ class ViewerState:
         if isinstance(reader, (FDA, FDS)):
             return self._build_parallel_overlay_infos(volumes, fundus_images, embedded_fundus=True)
         return self._build_parallel_overlay_infos(volumes, fundus_images, embedded_fundus=False)
+
+    def _try_load_shiwei_dataset(
+        self,
+        path: Path,
+        *,
+        vendor_mode: str = "auto",
+    ) -> dict[str, Any] | None:
+        normalized_mode = normalize_vendor_mode(vendor_mode)
+        if normalized_mode not in {"auto", "shiwei"}:
+            return None
+
+        dataset_dir = self._resolve_shiwei_dataset_dir(path)
+        if dataset_dir is None:
+            if normalized_mode == "shiwei":
+                raise ValueError(
+                    "当前已选择“视微”模式，但在该路径下未找到完整视微数据集。请传入视微 DICOM 目录，或目录中的任一配套 DICOM 文件。"
+                )
+            return None
+        return load_shiwei_oct_dataset(str(dataset_dir))
+
+    def _resolve_shiwei_dataset_dir(self, path: Path) -> Path | None:
+        candidates: list[Path] = []
+        if path.is_dir():
+            candidates.append(path)
+        elif path.suffix.lower() in {".dcm", ".dicom"}:
+            candidates.append(path.parent)
+
+        for candidate in candidates:
+            try:
+                resolve_input_files(str(candidate))
+            except FileNotFoundError:
+                continue
+            return candidate
+        return None
+
+    def _build_shiwei_overlay_infos(self, dataset: dict[str, Any]) -> list[OverlayInfo]:
+        fundus = dataset.get("fundus")
+        raw_segments = [
+            (
+                (float(start[0]), float(start[1])),
+                (float(end[0]), float(end[1])),
+            )
+            for start, end in dataset.get("segments", [])
+        ]
+        bounds = compute_scan_bounds(raw_segments)
+        warning = ""
+        if bounds is None:
+            warning = "Shiwei frame location metadata unavailable; overlay falls back to fundus only."
+
+        return [
+            OverlayInfo(
+                matched_fundus_index=0 if isinstance(fundus, FundusImageWithMetaData) else -1,
+                matched_fundus_label=getattr(fundus, "image_id", None) or "Shiwei fundus",
+                fundus_match_mode="shiwei-directory",
+                overlay_mode="shiwei-bounding-box",
+                projection_mode="shiwei-bounding-box",
+                localizer_mode="ophthalmic-frame-location-sequence",
+                warning=warning,
+                scan_segments=[],
+                bounds=bounds,
+            )
+        ]
 
     def _build_parallel_overlay_infos(
         self,
@@ -1286,32 +1429,29 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         route = parsed.path
+        query = parse_qs(parsed.query)
         try:
             if route in {"/", "/index.html"}:
                 self._serve_index()
                 return
 
             if route == "/api/state":
-                self._send_json(HTTPStatus.OK, self.state.build_state_payload())
+                self._send_state_payload(self.state.build_state_payload())
                 return
 
             if route == "/api/load":
-                query = parse_qs(parsed.query)
-                filepath = query.get("path", [""])[0].strip()
-                if not filepath:
-                    raise ValueError("Missing path query parameter.")
-                payload = self.state.load(filepath)
-                self._send_json(HTTPStatus.OK, payload)
+                filepath = self._require_query_value(query, "path", "Missing path query parameter.")
+                payload = self.state.load(filepath, vendor_mode=self._query_vendor_mode(query))
+                self._send_state_payload(payload)
                 return
 
             if route == "/api/pick-file":
-                payload = self.state.pick_and_load()
-                self._send_json(HTTPStatus.OK, payload)
+                payload = self.state.pick_and_load(vendor_mode=self._query_vendor_mode(query))
+                self._send_state_payload(payload)
                 return
 
             match = re.fullmatch(r"/api/volume/(\d+)/slice/(\d+)\.png", route)
             if match:
-                query = parse_qs(parsed.query)
                 contrast = int(query.get("contrast", ["100"])[0])
                 brightness = int(query.get("brightness", ["0"])[0])
                 payload = self.state.get_slice_png(
@@ -1357,10 +1497,11 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         route = parsed.path
+        query = parse_qs(parsed.query)
         try:
             if route == "/api/upload":
-                payload = self._handle_upload()
-                self._send_json(HTTPStatus.OK, payload)
+                payload = self._handle_upload(vendor_mode=self._query_vendor_mode(query))
+                self._send_state_payload(payload)
                 return
 
             self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Unknown route: {route}"})
@@ -1374,7 +1515,24 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         payload = self.html_path.read_text(encoding="utf-8").encode("utf-8")
         self._send_bytes(HTTPStatus.OK, payload, "text/html; charset=utf-8")
 
-    def _handle_upload(self) -> dict[str, Any]:
+    def _query_vendor_mode(self, query: dict[str, list[str]]) -> str:
+        return query.get("vendor", ["auto"])[0].strip()
+
+    def _require_query_value(
+        self,
+        query: dict[str, list[str]],
+        key: str,
+        error_message: str,
+    ) -> str:
+        value = query.get(key, [""])[0].strip()
+        if not value:
+            raise ValueError(error_message)
+        return value
+
+    def _send_state_payload(self, payload: dict[str, Any]) -> None:
+        self._send_json(HTTPStatus.OK, payload)
+
+    def _handle_upload(self, vendor_mode: str = "auto") -> dict[str, Any]:
         content_type = self.headers.get("Content-Type", "")
         if "multipart/form-data" not in content_type:
             raise ValueError("Upload requests must use multipart/form-data.")
@@ -1402,7 +1560,7 @@ class ViewerRequestHandler(BaseHTTPRequestHandler):
         if file_handle is None:
             raise ValueError("Uploaded file payload is unavailable.")
 
-        return self.state.load_uploaded_file(file_field.filename, file_handle)
+        return self.state.load_uploaded_file(file_field.filename, file_handle, vendor_mode=vendor_mode)
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         content = json.dumps(payload, ensure_ascii=False).encode("utf-8")

@@ -1,13 +1,15 @@
+from __future__ import annotations
+
 import argparse
 import os
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-import imageio
-import matplotlib.pyplot as plt
 import numpy as np
 import pydicom
-import tifffile
-from matplotlib.widgets import Slider
+
+from oct_converter.image_types import FundusImageWithMetaData, OCTVolumeWithMetaData
 
 
 DEFAULT_INPUT_DIR = (
@@ -35,6 +37,162 @@ SEGMENTATION_COLORS = [
     "#99ccff",
     "#aaffaa",
 ]
+SEGMENTATION_STORAGE_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.66.4"
+DICOM_FILE_SUFFIXES = {".dcm", ".dicom"}
+
+
+def _as_float_list(values: Any) -> list[float] | None:
+    if values is None:
+        return None
+    if not isinstance(values, (list, tuple)):
+        values = [values]
+
+    converted: list[float] = []
+    for value in values:
+        try:
+            converted.append(float(value))
+        except (TypeError, ValueError):
+            return None
+    return converted or None
+
+
+def _extract_shared_pixel_spacing(dataset) -> list[float] | None:
+    shared = getattr(dataset, "SharedFunctionalGroupsSequence", None)
+    if shared and hasattr(shared[0], "PixelMeasuresSequence"):
+        return _as_float_list(shared[0].PixelMeasuresSequence[0].PixelSpacing)
+    return _as_float_list(getattr(dataset, "PixelSpacing", None))
+
+
+def extract_volume_pixel_spacing(dataset) -> list[float] | None:
+    spacing = _extract_shared_pixel_spacing(dataset)
+    if spacing is None:
+        return None
+
+    row_spacing = float(spacing[0])
+    col_spacing = float(spacing[1] if len(spacing) > 1 else spacing[0])
+    try:
+        slice_spacing = float(getattr(dataset, "SpacingBetweenSlices", row_spacing))
+    except (TypeError, ValueError):
+        slice_spacing = row_spacing
+    return [col_spacing, row_spacing, slice_spacing]
+
+
+def extract_fundus_pixel_spacing(dataset) -> list[float] | None:
+    spacing = _extract_shared_pixel_spacing(dataset)
+    if spacing is None:
+        return None
+
+    row_spacing = float(spacing[0])
+    col_spacing = float(spacing[1] if len(spacing) > 1 else spacing[0])
+    return [col_spacing, row_spacing]
+
+
+def _extract_laterality(dataset) -> str | None:
+    return getattr(dataset, "ImageLaterality", None) or getattr(dataset, "Laterality", None)
+
+
+def _extract_acquisition_datetime(dataset) -> datetime | None:
+    date_value = (
+        getattr(dataset, "AcquisitionDate", None)
+        or getattr(dataset, "ContentDate", None)
+        or getattr(dataset, "StudyDate", None)
+    )
+    time_value = (
+        getattr(dataset, "AcquisitionTime", None)
+        or getattr(dataset, "ContentTime", None)
+        or getattr(dataset, "StudyTime", None)
+    )
+    if not date_value:
+        return None
+
+    date_text = str(date_value).strip()
+    time_text = str(time_value or "").split(".")[0].strip()
+    for pattern in ("%Y%m%d%H%M%S", "%Y%m%d%H%M", "%Y%m%d"):
+        try:
+            return datetime.strptime(f"{date_text}{time_text}", pattern)
+        except ValueError:
+            continue
+    return None
+
+
+def extract_basic_dicom_metadata(dataset, *, include_paths: dict[str, str] | None = None) -> dict[str, Any]:
+    metadata = {
+        "manufacturer": getattr(dataset, "Manufacturer", None),
+        "manufacturer_model_name": getattr(dataset, "ManufacturerModelName", None),
+        "patient_id": getattr(dataset, "PatientID", None),
+        "patient_name": str(getattr(dataset, "PatientName", "")) or None,
+        "patient_sex": getattr(dataset, "PatientSex", None),
+        "patient_birth_date": getattr(dataset, "PatientBirthDate", None),
+        "study_instance_uid": getattr(dataset, "StudyInstanceUID", None),
+        "series_instance_uid": getattr(dataset, "SeriesInstanceUID", None),
+        "sop_instance_uid": getattr(dataset, "SOPInstanceUID", None),
+        "laterality": _extract_laterality(dataset),
+        "modality": getattr(dataset, "Modality", None),
+        "rows": getattr(dataset, "Rows", None),
+        "columns": getattr(dataset, "Columns", None),
+        "number_of_frames": getattr(dataset, "NumberOfFrames", None),
+        "pixel_spacing": _extract_shared_pixel_spacing(dataset),
+        "paths": include_paths or None,
+    }
+    return {key: value for key, value in metadata.items() if value not in (None, "", {})}
+
+
+def build_shiwei_contours(
+    segmentation_surfaces,
+    coordinates,
+    segmentation_orientation,
+    *,
+    slice_count: int,
+    target_width: int,
+) -> dict[str, list[np.ndarray | None]]:
+    if segmentation_surfaces is None:
+        return {}
+
+    layer_count = int(segmentation_surfaces.shape[0])
+    contours = {f"Layer {layer_index + 1}": [] for layer_index in range(layer_count)}
+
+    for slice_idx in range(slice_count):
+        curves = get_segmentation_curves(
+            segmentation_surfaces,
+            coordinates,
+            slice_idx,
+            target_width,
+            orientation=segmentation_orientation,
+        )
+        for layer_index in range(layer_count):
+            key = f"Layer {layer_index + 1}"
+            if layer_index < len(curves):
+                contours[key].append(np.asarray(curves[layer_index], dtype=np.float32))
+            else:
+                contours[key].append(None)
+
+    return contours
+
+
+def build_shiwei_scan_segments(
+    coordinates,
+    fundus_shape,
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    height, width = fundus_shape[:2]
+    segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for coords in coordinates:
+        values = np.asarray(coords, dtype=float).reshape(-1)
+        if values.size < 4 or not np.isfinite(values[:4]).all() or not np.any(values[:4]):
+            continue
+        x0, y0, x1, y1 = values[:4]
+        segments.append(
+            (
+                (
+                    float(np.clip(x0, 0.0, max(width - 1, 0))),
+                    float(np.clip(y0, 0.0, max(height - 1, 0))),
+                ),
+                (
+                    float(np.clip(x1, 0.0, max(width - 1, 0))),
+                    float(np.clip(y1, 0.0, max(height - 1, 0))),
+                ),
+            )
+        )
+    return segments
 
 
 def parse_args():
@@ -111,7 +269,7 @@ def normalize_formats(formats_text):
 
 def find_candidate(input_dir, keywords, exclude_keywords=None):
     exclude_keywords = exclude_keywords or []
-    for path in sorted(Path(input_dir).glob("*.dcm")):
+    for path in iter_dicom_files(input_dir):
         name = path.name.lower()
         if all(keyword in name for keyword in keywords) and not any(
             keyword in name for keyword in exclude_keywords
@@ -122,11 +280,45 @@ def find_candidate(input_dir, keywords, exclude_keywords=None):
 
 def find_by_suffix(input_dir, suffixes):
     suffixes = [suffix.lower() for suffix in suffixes]
-    for path in sorted(Path(input_dir).glob("*.dcm")):
+    for path in iter_dicom_files(input_dir):
         name = path.name.lower()
         for suffix in suffixes:
             if name.endswith(suffix):
                 return str(path)
+    return None
+
+
+def iter_dicom_files(input_dir):
+    input_path = Path(input_dir)
+    candidates = [
+        path for path in sorted(input_path.iterdir())
+        if path.is_file() and path.suffix.lower() in DICOM_FILE_SUFFIXES
+    ]
+    return candidates
+
+
+def read_dicom_header(path):
+    try:
+        return pydicom.dcmread(path, stop_before_pixels=True, force=True)
+    except Exception:
+        return None
+
+
+def find_segmentation_file_by_header(input_dir):
+    for path in iter_dicom_files(input_dir):
+        dataset = read_dicom_header(path)
+        if dataset is None:
+            continue
+        modality = str(getattr(dataset, "Modality", "") or "").upper()
+        sop_class_uid = str(getattr(dataset, "SOPClassUID", "") or "")
+        series_description = str(getattr(dataset, "SeriesDescription", "") or "").lower()
+        if (
+            modality == "SEG"
+            or sop_class_uid == SEGMENTATION_STORAGE_SOP_CLASS_UID
+            or "seg" in series_description
+            or "segment" in series_description
+        ):
+            return str(path)
     return None
 
 
@@ -166,6 +358,8 @@ def resolve_input_files(input_dir, bscan_file=None, fundus_file=None, seg_file=N
         )
         if seg_file is None:
             seg_file = find_candidate(input_dir, ["segmentation"])
+        if seg_file is None:
+            seg_file = find_segmentation_file_by_header(input_dir)
 
     if bscan_file is None or not os.path.exists(bscan_file):
         raise FileNotFoundError("Could not locate the structural B-scan DICOM file.")
@@ -384,6 +578,95 @@ def load_shiwei_data(
     )
 
 
+def load_shiwei_oct_dataset(
+    input_path,
+    bscan_file=None,
+    fundus_file=None,
+    seg_file=None,
+):
+    input_root = Path(input_path)
+    input_dir = input_root if input_root.is_dir() else input_root.parent
+
+    (
+        volume,
+        fundus,
+        coordinates,
+        angles,
+        segmentation_surfaces,
+        segmentation_orientation,
+        bscan_file,
+        fundus_file,
+        seg_file,
+    ) = load_shiwei_data(
+        input_dir=str(input_dir),
+        bscan_file=bscan_file,
+        fundus_file=fundus_file,
+        seg_file=seg_file,
+    )
+
+    ds_bscan = pydicom.dcmread(bscan_file, stop_before_pixels=True)
+    ds_fundus = pydicom.dcmread(fundus_file, stop_before_pixels=True)
+
+    file_paths = {
+        "input_dir": str(input_dir),
+        "bscan_file": str(bscan_file),
+        "fundus_file": str(fundus_file),
+    }
+    if seg_file:
+        file_paths["seg_file"] = str(seg_file)
+
+    contours = build_shiwei_contours(
+        segmentation_surfaces,
+        coordinates,
+        segmentation_orientation,
+        slice_count=int(volume.shape[0]),
+        target_width=int(volume.shape[-1]),
+    )
+
+    volume_object = OCTVolumeWithMetaData(
+        volume=volume,
+        patient_id=getattr(ds_bscan, "PatientID", None),
+        patient_dob=getattr(ds_bscan, "PatientBirthDate", None),
+        volume_id=Path(bscan_file).stem,
+        acquisition_date=_extract_acquisition_datetime(ds_bscan),
+        laterality=_extract_laterality(ds_bscan),
+        contours=contours or None,
+        pixel_spacing=extract_volume_pixel_spacing(ds_bscan),
+        metadata={
+            "source": "shiwei",
+            "angles_degrees": [float(angle) for angle in angles],
+            "coordinate_count": len(coordinates),
+            "segmentation_file_present": bool(seg_file),
+            "paths": file_paths,
+        },
+        header=extract_basic_dicom_metadata(ds_bscan, include_paths=file_paths),
+    )
+
+    fundus_object = FundusImageWithMetaData(
+        image=fundus,
+        laterality=_extract_laterality(ds_fundus),
+        patient_id=getattr(ds_fundus, "PatientID", None),
+        image_id=Path(fundus_file).stem,
+        patient_dob=getattr(ds_fundus, "PatientBirthDate", None),
+        metadata=extract_basic_dicom_metadata(ds_fundus, include_paths=file_paths),
+        pixel_spacing=extract_fundus_pixel_spacing(ds_fundus),
+    )
+
+    return {
+        "volume": volume_object,
+        "fundus": fundus_object,
+        "coordinates": [np.asarray(item, dtype=float) for item in coordinates],
+        "angles": [float(angle) for angle in angles],
+        "segments": build_shiwei_scan_segments(coordinates, fundus.shape),
+        "segmentation_surfaces": segmentation_surfaces,
+        "segmentation_orientation": segmentation_orientation,
+        "input_dir": str(input_dir),
+        "bscan_file": str(bscan_file),
+        "fundus_file": str(fundus_file),
+        "seg_file": str(seg_file) if seg_file else None,
+    }
+
+
 def render_frame(fundus, bscan_slice, coords, angle, slice_idx, total_slices):
     fundus_rgb = ensure_rgb(fundus).copy()
     bscan_rgb = ensure_rgb(bscan_slice)
@@ -419,6 +702,9 @@ def export_visualization(
     basename,
     fps,
 ):
+    import imageio
+    import tifffile
+
     os.makedirs(output_dir, exist_ok=True)
 
     gif_writer = None
@@ -462,6 +748,8 @@ def export_visualization(
 
 
 def create_export_frame(fundus, bscan_slice, coords, angle, curves, slice_idx, total_slices):
+    import matplotlib.pyplot as plt
+
     fig, (ax_fundus, ax_bscan) = plt.subplots(1, 2, figsize=(12, 6))
     fig.subplots_adjust(bottom=0.08, top=0.92, left=0.03, right=0.97)
 
@@ -511,6 +799,9 @@ def show_interactive_viewer(
     segmentation_surfaces,
     segmentation_orientation,
 ):
+    import matplotlib.pyplot as plt
+    from matplotlib.widgets import Slider
+
     fig, (ax_fundus, ax_bscan) = plt.subplots(1, 2, figsize=(12, 6))
     plt.subplots_adjust(bottom=0.2)
 
