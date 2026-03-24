@@ -57,6 +57,20 @@ For Zeiss `.img` files, custom dimensions can be provided:
 python web_viewer/oct_web_viewer.py /path/to/file.img --img-rows 1024 --img-cols 512 --img-interlaced
 ```
 
+### Unified FA Qt viewer
+
+There is also a unified Qt viewer for Topcon and Zeiss FA datasets:
+
+```bash
+python scripts/fa_qt_viewer.py /path/to/fa_dataset
+python scripts/fa_qt_viewer.py /path/to/zeiss_series --vendor zeiss
+python scripts/fa_qt_viewer.py /path/to/topcon_folder --vendor topcon
+```
+
+The viewer keeps the Topcon-style frame browser layout, auto-detects `Topcon` folders
+(`DATAFILE` + `IM*.JPG`) and `Zeiss` DICOM datasets, and uses a single timeline/table workflow
+for both vendors.
+
 Here is an example of reading a .fds file:
 
 ```python
