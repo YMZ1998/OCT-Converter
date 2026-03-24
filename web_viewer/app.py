@@ -1,3 +1,5 @@
+"""Application entry point for the local OCT web viewer."""
+
 from __future__ import annotations
 
 import argparse
@@ -10,6 +12,8 @@ from .state import ViewerState
 
 
 def parse_args() -> argparse.Namespace:
+    """Parses command-line arguments for the web viewer."""
+
     parser = argparse.ArgumentParser(description="Local OCT web viewer.")
     parser.add_argument("path", nargs="?", help="Optional OCT file to load at startup.")
     parser.add_argument("--host", default="192.168.0.90", help="Host to bind.")
@@ -30,6 +34,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Starts the local OCT web viewer server."""
+
     args = parse_args()
     html_path = Path(__file__).with_name("oct_web_viewer.html")
     state = ViewerState(

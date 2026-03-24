@@ -172,6 +172,39 @@
     .viewer-toolbar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
     .viewer-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
     .control { display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--muted); }
+    .contour-layer-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 180px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .contour-layer-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text);
+      font-size: 12px;
+    }
+
+    .contour-layer-item input[type="checkbox"] {
+      accent-color: var(--accent);
+    }
+
+    .contour-layer-swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      flex: 0 0 auto;
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18) inset;
+    }
+
+    .contour-layer-empty {
+      color: var(--muted);
+      font-size: 12px;
+    }
     .compare-view {
       display: grid;
       grid-template-columns: minmax(220px, 0.72fr) minmax(520px, 1.28fr);
@@ -304,6 +337,7 @@
           <button type="button" class="secondary mode-button" data-vendor-mode="optovue">Optovue OCT</button>
           <button type="button" class="secondary mode-button" data-vendor-mode="bioptigen">Bioptigen OCT</button>
           <button type="button" class="secondary mode-button" data-vendor-mode="dicom">通用 DICOM</button>
+          <button type="button" class="secondary mode-button" data-vendor-mode="tupai">Tupai DICOM</button>
           <button type="button" class="secondary mode-button" data-vendor-mode="shiwei">视微</button>
         </div>
       </div>
@@ -407,6 +441,7 @@
               <div class="control">
                 <label>轮廓图层</label>
                 <div id="contourNames" class="hint">-</div>
+                <div id="contourLayerList" class="contour-layer-list"></div>
               </div>
             </div>
           </div>
@@ -468,9 +503,12 @@
       fundusViewCacheKey: "",
       fundusViewCacheCanvas: null,
       contourCache: new Map(),
+      contourVisibility: new Map(),
       overlayDisplay: "box",
       vendorMode: "auto",
     };
+
+    const CONTOUR_COLORS = ["#38bdf8", "#22c55e", "#f97316", "#f43f5e", "#a78bfa", "#facc15"];
 
     const elements = {
       pathInput: document.getElementById("pathInput"),
@@ -509,6 +547,7 @@
       brightnessLabel: document.getElementById("brightnessLabel"),
       speedLabel: document.getElementById("speedLabel"),
       contourNames: document.getElementById("contourNames"),
+      contourLayerList: document.getElementById("contourLayerList"),
       fundusViewTitle: document.getElementById("fundusViewTitle"),
       fundusViewHint: document.getElementById("fundusViewHint"),
       bscanViewTitle: document.getElementById("bscanViewTitle"),
@@ -569,16 +608,23 @@
         pathHint: "输入通用 DICOM 文件路径，例如 D:\\data\\sample.dcm",
         allowUpload: true,
       },
+      tupai: {
+        label: "Tupai DICOM",
+        accept: ".dcm,.DCM,.dicom,.DICOM",
+        pathHint: "输入包含 OCT.dcm 和 Fundus.dcm 的目录、其中任一 DICOM 文件路径，或可唯一定位数据集的上级目录",
+        allowUpload: false,
+      },
       shiwei: {
         label: "视微",
         accept: ".dcm,.DCM,.dicom,.DICOM",
-        pathHint: "输入视微 DICOM 目录，或该目录中的任一配套 DICOM 文件路径",
+        pathHint: "输入视微 DICOM 目录、该目录中的任一配套 DICOM 文件路径，或可唯一定位数据集的上级目录",
         allowUpload: false,
       },
     };
 
     const VENDOR_MODE_VALUES = Object.keys(VENDOR_MODE_CONFIG);
-    const SHIWEI_UPLOAD_HINT = "视微模式不支持单文件上传，请直接输入目录路径，或输入目录中的任一 DICOM 文件路径后点击“加载文件”。";
+    const SHIWEI_UPLOAD_HINT = "视微模式不支持单文件上传，请直接输入数据目录、可唯一定位数据集的上级目录，或输入目录中的任一 DICOM 文件路径后点击“加载文件”。";
+    const TUPAI_UPLOAD_HINT = "Tupai 模式不支持单文件上传，请直接输入数据目录、可唯一定位数据集的上级目录，或输入 OCT.dcm / Fundus.dcm 的路径后点击“加载文件”。";
 
     function vendorModeButtons() {
       return Array.from(elements.vendorModeGroup?.querySelectorAll("[data-vendor-mode]") || []);
@@ -590,6 +636,12 @@
 
     function getVendorModeConfig(mode) {
       return VENDOR_MODE_CONFIG[mode] || VENDOR_MODE_CONFIG.auto;
+    }
+
+    function getUploadHint(mode) {
+      if (mode === "shiwei") return SHIWEI_UPLOAD_HINT;
+      if (mode === "tupai") return TUPAI_UPLOAD_HINT;
+      return "当前模式不支持浏览器上传，请直接输入文件路径后点击“加载文件”。";
     }
 
     function getUiState() {
@@ -679,12 +731,17 @@
       return getVendorModeConfig(mode).label;
     }
 
+    function usesDirectoryPicker(mode) {
+      return mode === "shiwei" || mode === "tupai";
+    }
+
     function syncVendorModeButtons() {
       const vendorConfig = getVendorModeConfig(state.vendorMode);
       vendorModeButtons().forEach((button) => {
         button.classList.toggle("active", button.dataset.vendorMode === state.vendorMode);
       });
       elements.pathInput.placeholder = vendorConfig.pathHint;
+      elements.browseButton.textContent = usesDirectoryPicker(state.vendorMode) ? "选择目录" : "选择文件";
       elements.fileInput.accept = vendorConfig.accept;
       elements.fileInput.value = "";
     }
@@ -777,6 +834,86 @@
       return state.data.fundusImages[state.fundusIndex] || null;
     }
 
+    function getContourStateKey(volume = currentVolume()) {
+      if (!volume) return "";
+      return `${state.data?.sourcePath || ""}::${state.volumeIndex}`;
+    }
+
+    function ensureContourVisibilityState(volume = currentVolume()) {
+      const contourNames = Array.isArray(volume?.contourNames) ? volume.contourNames : [];
+      const contourStateKey = getContourStateKey(volume);
+      if (!contourStateKey || !contourNames.length) {
+        return null;
+      }
+
+      let visibility = state.contourVisibility.get(contourStateKey);
+      if (!(visibility instanceof Map)) {
+        visibility = new Map();
+      }
+      contourNames.forEach((name) => {
+        if (!visibility.has(name)) {
+          visibility.set(name, true);
+        }
+      });
+      Array.from(visibility.keys()).forEach((name) => {
+        if (!contourNames.includes(name)) {
+          visibility.delete(name);
+        }
+      });
+      state.contourVisibility.set(contourStateKey, visibility);
+      return visibility;
+    }
+
+    function getVisibleContourNames(volume = currentVolume()) {
+      const contourNames = Array.isArray(volume?.contourNames) ? volume.contourNames : [];
+      const visibility = ensureContourVisibilityState(volume);
+      if (!visibility) {
+        return [];
+      }
+      return contourNames.filter((name) => visibility.get(name) !== false);
+    }
+
+    function renderContourLayerControls() {
+      const volume = currentVolume();
+      const contourNames = Array.isArray(volume?.contourNames) ? volume.contourNames : [];
+      const visibleNames = getVisibleContourNames(volume);
+
+      if (!contourNames.length) {
+        elements.contourNames.textContent = "无";
+        elements.contourLayerList.innerHTML = `<div class="contour-layer-empty">当前切片无可用轮廓图层</div>`;
+        return;
+      }
+
+      elements.contourNames.textContent = `${visibleNames.length} / ${contourNames.length} 个图层已显示`;
+      const visibility = ensureContourVisibilityState(volume);
+      elements.contourLayerList.innerHTML = "";
+      contourNames.forEach((name, index) => {
+        const item = document.createElement("label");
+        item.className = "contour-layer-item";
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = visibility?.get(name) !== false;
+        checkbox.addEventListener("change", () => {
+          visibility?.set(name, checkbox.checked);
+          updateLabels();
+          scheduleDraw();
+        });
+
+        const swatch = document.createElement("span");
+        swatch.className = "contour-layer-swatch";
+        swatch.style.background = CONTOUR_COLORS[index % CONTOUR_COLORS.length];
+
+        const text = document.createElement("span");
+        text.textContent = name;
+
+        item.appendChild(checkbox);
+        item.appendChild(swatch);
+        item.appendChild(text);
+        elements.contourLayerList.appendChild(item);
+      });
+    }
+
     function resetPlayback() {
       if (state.timer) {
         window.clearInterval(state.timer);
@@ -799,9 +936,7 @@
       }
       elements.overlayButton.textContent = state.overlay ? "轮廓开" : "轮廓关";
       elements.infoButton.textContent = state.showInfo ? "提示开" : "提示关";
-      elements.contourNames.textContent = volume && volume.contourNames.length
-        ? volume.contourNames.join(", ")
-        : "无";
+      renderContourLayerControls();
     }
 
     function renderSelectors() {
@@ -1135,17 +1270,23 @@
     }
 
     function drawContours(contours, width, height) {
-      const colors = ["#38bdf8", "#22c55e", "#f97316", "#f43f5e", "#a78bfa", "#facc15"];
       const crop = state.bscanCrop || getDefaultBscanCrop();
       const targetWidth = elements.octCanvas.width;
       const targetHeight = elements.octCanvas.height;
-      const names = Object.keys(contours);
-      names.forEach((name, index) => {
+      const visibleContourNames = new Set(getVisibleContourNames());
+      const orderedNames = Array.isArray(currentVolume()?.contourNames)
+        ? currentVolume().contourNames
+        : Object.keys(contours);
+      const names = orderedNames.filter(
+        (name) => visibleContourNames.has(name) && Object.prototype.hasOwnProperty.call(contours, name),
+      );
+      names.forEach((name) => {
         const values = contours[name];
         if (!values || !values.length) return;
         ctx.beginPath();
         ctx.lineWidth = 2;
-        ctx.strokeStyle = colors[index % colors.length];
+        const colorIndex = Math.max(0, orderedNames.indexOf(name));
+        ctx.strokeStyle = CONTOUR_COLORS[colorIndex % CONTOUR_COLORS.length];
         let started = false;
         values.forEach((yValue, xIndex) => {
           if (yValue == null || Number.isNaN(yValue)) {
@@ -1749,7 +1890,7 @@
         return;
       }
       if (!getVendorModeConfig(state.vendorMode).allowUpload) {
-        setStatus(SHIWEI_UPLOAD_HINT, true);
+        setStatus(getUploadHint(state.vendorMode), true);
         elements.fileInput.value = "";
         return;
       }
@@ -1856,17 +1997,17 @@
     }
 
     async function pickLocalFile() {
-      setBusy(true, "正在打开本地文件选择器...");
+      setBusy(true, usesDirectoryPicker(state.vendorMode) ? "正在打开本地目录选择器..." : "正在打开本地文件选择器...");
       try {
         const payload = await fetchJson(`/api/pick-file?vendor=${encodeURIComponent(state.vendorMode)}`);
         if (payload?.cancelled) {
-          setStatus("已取消选择文件。");
+          setStatus(usesDirectoryPicker(state.vendorMode) ? "已取消选择目录。" : "已取消选择文件。");
           return;
         }
         applyLoadedPayload(payload);
       } catch (error) {
         if (!getVendorModeConfig(state.vendorMode).allowUpload) {
-          setStatus(error.message || SHIWEI_UPLOAD_HINT, true);
+          setStatus(error.message || getUploadHint(state.vendorMode), true);
           return;
         }
         setStatus(`原生选文件失败，已切换浏览器上传：${error.message}`, true);
@@ -1877,10 +2018,6 @@
     }
 
     elements.browseButton.addEventListener("click", () => {
-      if (state.vendorMode === "shiwei") {
-        setStatus("视微模式请直接输入目录路径，或输入目录中的 DICOM 文件路径后点击“加载文件”。", true);
-        return;
-      }
       pickLocalFile();
     });
     elements.fileInput.addEventListener("change", () => {

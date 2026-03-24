@@ -37,8 +37,10 @@ A number of example usage scripts are included in `examples/`.
 This repo also includes a lightweight local web viewer for OCT files:
 
 ```bash
-python scripts/oct_web_viewer.py /path/to/file.e2e
+python web_viewer/oct_web_viewer.py /path/to/file.e2e
 ```
+
+Detailed viewer documentation is available at `web_viewer/README.md`.
 
 It starts a local server and opens a browser page where you can:
 
@@ -52,7 +54,7 @@ It starts a local server and opens a browser page where you can:
 For Zeiss `.img` files, custom dimensions can be provided:
 
 ```bash
-python scripts/oct_web_viewer.py /path/to/file.img --img-rows 1024 --img-cols 512 --img-interlaced
+python web_viewer/oct_web_viewer.py /path/to/file.img --img-rows 1024 --img-cols 512 --img-interlaced
 ```
 
 Here is an example of reading a .fds file:

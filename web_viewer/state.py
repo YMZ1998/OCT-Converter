@@ -20,13 +20,15 @@ from .oct_viewer_vendor_modes import (
     NORMALIZED_SUPPORTED_EXTENSIONS,
     SHIWEI_UPLOAD_HINT,
     SUPPORTED_EXTENSIONS,
+    TUPAI_UPLOAD_HINT,
     VENDOR_MODE_FILE_DIALOG_TYPES,
     VENDOR_MODE_LABELS,
     build_vendor_validation_error,
     is_supported_suffix_for_vendor,
     normalize_vendor_mode,
 )
-from .shiwei_loader import load_shiwei_oct_dataset, resolve_input_files
+from .shiwei_loader import load_shiwei_oct_dataset, resolve_shiwei_input_dir
+from .tupai_loader import load_tupai_oct_dataset, resolve_tupai_input_dir
 
 
 def to_jsonable(value: Any) -> Any:
@@ -475,14 +477,21 @@ class ViewerState:
         except Exception as exc:
             raise RuntimeError("Native file dialog is not available in this Python environment.") from exc
 
+        normalized_mode = normalize_vendor_mode(vendor_mode)
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
         try:
-            selected = filedialog.askopenfilename(
-                title="Select an OCT file",
-                filetypes=VENDOR_MODE_FILE_DIALOG_TYPES.get(normalize_vendor_mode(vendor_mode), FILE_DIALOG_TYPES),
-            )
+            if normalized_mode in {"shiwei", "tupai"}:
+                selected = filedialog.askdirectory(
+                    title="Select an OCT dataset directory",
+                    mustexist=True,
+                )
+            else:
+                selected = filedialog.askopenfilename(
+                    title="Select an OCT file",
+                    filetypes=VENDOR_MODE_FILE_DIALOG_TYPES.get(normalized_mode, FILE_DIALOG_TYPES),
+                )
         finally:
             root.destroy()
         return selected or ""
@@ -622,6 +631,12 @@ class ViewerState:
             if is_supported_suffix_for_vendor(path, normalized_mode):
                 return
             raise ValueError(build_vendor_validation_error(path, normalized_mode))
+        if normalized_mode == "tupai":
+            if path.is_dir():
+                return
+            if is_supported_suffix_for_vendor(path, normalized_mode):
+                return
+            raise ValueError(build_vendor_validation_error(path, normalized_mode))
         if path.is_dir():
             label = VENDOR_MODE_LABELS.get(normalized_mode, normalized_mode)
             raise ValueError(f"Selected vendor mode '{label}' requires choosing a file, not a directory.")
@@ -636,6 +651,8 @@ class ViewerState:
     def _validate_upload_request(self, upload_name: str, vendor_mode: str) -> None:
         if vendor_mode == "shiwei":
             raise ValueError(SHIWEI_UPLOAD_HINT)
+        if vendor_mode == "tupai":
+            raise ValueError(TUPAI_UPLOAD_HINT)
 
         upload_path = Path(upload_name)
         suffix = upload_path.suffix
@@ -650,20 +667,40 @@ class ViewerState:
         vendor_mode: str,
         source_meta: dict[str, str],
     ) -> LoadedDataset:
+        tupai_dataset = self._try_load_tupai_dataset(path, vendor_mode=vendor_mode)
+        if tupai_dataset is not None:
+            return self._build_tupai_loaded_dataset(tupai_dataset, source_meta)
         shiwei_dataset = self._try_load_shiwei_dataset(path, vendor_mode=vendor_mode)
         if shiwei_dataset is not None:
             return self._build_shiwei_loaded_dataset(shiwei_dataset, source_meta)
         return self._build_reader_loaded_dataset(path, source_meta)
+
+    def _build_tupai_loaded_dataset(
+        self,
+        tupai_dataset: dict[str, Any],
+        source_meta: dict[str, str],
+    ) -> LoadedDataset:
+        dataset_dir = str(tupai_dataset.get("dataset_dir") or source_meta["source_path"])
+        return LoadedDataset(
+            source_path=dataset_dir,
+            source_kind=source_meta["source_kind"],
+            recent_path=dataset_dir,
+            reader_name="TupaiDicomDataset",
+            volumes=[tupai_dataset["volume"]],
+            fundus_images=[tupai_dataset["fundus"]],
+            overlay_infos=self._build_tupai_overlay_infos(tupai_dataset),
+        )
 
     def _build_shiwei_loaded_dataset(
         self,
         shiwei_dataset: dict[str, Any],
         source_meta: dict[str, str],
     ) -> LoadedDataset:
+        dataset_dir = str(shiwei_dataset.get("input_dir") or source_meta["source_path"])
         return LoadedDataset(
-            source_path=source_meta["source_path"],
+            source_path=dataset_dir,
             source_kind=source_meta["source_kind"],
-            recent_path=source_meta["recent_path"],
+            recent_path=dataset_dir,
             reader_name="ShiweiDicomDataset",
             volumes=[shiwei_dataset["volume"]],
             fundus_images=[shiwei_dataset["fundus"]],
@@ -745,25 +782,37 @@ class ViewerState:
         if dataset_dir is None:
             if normalized_mode == "shiwei":
                 raise ValueError(
-                    "褰撳墠宸查€夋嫨鈥滆寰€濇ā寮忥紝浣嗗湪璇ヨ矾寰勪笅鏈壘鍒板畬鏁磋寰暟鎹泦銆傝浼犲叆瑙嗗井 DICOM 鐩綍锛屾垨鐩綍涓殑浠讳竴閰嶅 DICOM 鏂囦欢銆?"
+                    "当前视微模式需要输入视微数据目录、目录中的任一配套 DICOM 文件路径，"
+                    "或可唯一定位到该数据集的上级目录。"
                 )
             return None
         return load_shiwei_oct_dataset(str(dataset_dir))
 
     def _resolve_shiwei_dataset_dir(self, path: Path) -> Path | None:
-        candidates: list[Path] = []
-        if path.is_dir():
-            candidates.append(path)
-        elif path.suffix.lower() in {".dcm", ".dicom"}:
-            candidates.append(path.parent)
+        return resolve_shiwei_input_dir(path)
 
-        for candidate in candidates:
-            try:
-                resolve_input_files(str(candidate))
-            except FileNotFoundError:
-                continue
-            return candidate
-        return None
+    def _try_load_tupai_dataset(
+        self,
+        path: Path,
+        *,
+        vendor_mode: str = "auto",
+    ) -> dict[str, Any] | None:
+        normalized_mode = normalize_vendor_mode(vendor_mode)
+        if normalized_mode not in {"auto", "tupai"}:
+            return None
+
+        dataset_dir = self._resolve_tupai_dataset_dir(path)
+        if dataset_dir is None:
+            if normalized_mode == "tupai":
+                raise ValueError(
+                    "当前 Tupai 模式需要输入包含 OCT.dcm 和 Fundus.dcm 的目录、"
+                    "其中任一文件路径，或可唯一定位到该数据集的上级目录。"
+                )
+            return None
+        return load_tupai_oct_dataset(dataset_dir)
+
+    def _resolve_tupai_dataset_dir(self, path: Path) -> Path | None:
+        return resolve_tupai_input_dir(path)
 
     def _build_shiwei_overlay_infos(self, dataset: dict[str, Any]) -> list[OverlayInfo]:
         fundus = dataset.get("fundus")
@@ -776,7 +825,7 @@ class ViewerState:
         ]
         bounds = compute_scan_bounds(raw_segments)
         warning = ""
-        if bounds is None:
+        if not raw_segments:
             warning = "Shiwei frame location metadata unavailable; overlay falls back to fundus only."
 
         return [
@@ -784,11 +833,47 @@ class ViewerState:
                 matched_fundus_index=0 if isinstance(fundus, FundusImageWithMetaData) else -1,
                 matched_fundus_label=getattr(fundus, "image_id", None) or "Shiwei fundus",
                 fundus_match_mode="shiwei-directory",
-                overlay_mode="shiwei-bounding-box",
-                projection_mode="shiwei-bounding-box",
+                overlay_mode="shiwei-metadata",
+                projection_mode="shiwei-metadata",
                 localizer_mode="ophthalmic-frame-location-sequence",
                 warning=warning,
-                scan_segments=[],
+                scan_segments=raw_segments,
+                bounds=bounds,
+            )
+        ]
+
+    def _build_tupai_overlay_infos(self, dataset: dict[str, Any]) -> list[OverlayInfo]:
+        fundus = dataset.get("fundus")
+        full_segments = [
+            (
+                (float(start[0]), float(start[1])),
+                (float(end[0]), float(end[1])),
+            )
+            for start, end in dataset.get("segments", [])
+        ]
+        band_segments = [
+            (
+                (float(start[0]), float(start[1])),
+                (float(end[0]), float(end[1])),
+            )
+            for start, end in dataset.get("segment_coordinates", [])
+        ]
+        scan_segments = full_segments or band_segments
+        bounds = compute_scan_bounds(scan_segments)
+        warning = ""
+        if not scan_segments:
+            warning = "Tupai frame location metadata unavailable; overlay falls back to fundus only."
+
+        return [
+            OverlayInfo(
+                matched_fundus_index=0 if isinstance(fundus, FundusImageWithMetaData) else -1,
+                matched_fundus_label=getattr(fundus, "image_id", None) or "Tupai fundus",
+                fundus_match_mode="tupai-directory",
+                overlay_mode="tupai-metadata",
+                projection_mode=str(dataset.get("coordinate_mode") or "tupai"),
+                localizer_mode=str(dataset.get("segment_mode") or "ophthalmic-frame-location-sequence"),
+                warning=warning,
+                scan_segments=scan_segments,
                 bounds=bounds,
             )
         ]
