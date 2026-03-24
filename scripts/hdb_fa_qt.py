@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import struct
 import sys
-from collections import Counter
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -23,12 +24,14 @@ try:
     from PyQt5.QtCore import QSettings, Qt, QTimer
     from PyQt5.QtGui import QFont, QImage, QKeySequence, QPixmap
     from PyQt5.QtWidgets import (
+        QAction,
         QAbstractItemView,
         QApplication,
         QCheckBox,
         QComboBox,
         QFileDialog,
         QFormLayout,
+        QGridLayout,
         QGroupBox,
         QHBoxLayout,
         QHeaderView,
@@ -45,9 +48,12 @@ try:
         QStatusBar,
         QTableWidget,
         QTableWidgetItem,
+        QToolBar,
         QVBoxLayout,
         QWidget,
     )
+    from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+    from matplotlib.figure import Figure
 
     QT_AVAILABLE = True
 except ImportError:
@@ -56,8 +62,8 @@ except ImportError:
 
 DEFAULT_INPUT_PATH = Path(r"E:\Data\OCT\海德堡\海德堡FA.E2E")
 TIME_PARSE_NOTE = (
-    "当前仓库能稳定解析海德堡 E2E 的图像、眼别、模式、系列和时区信息；"
-    "chunk 39 中的绝对采集时间尚未被这个仓库解码，因此界面当前按 series_id + slice_id 排序显示帧。"
+    "当前脚本会组合 StudyData(0x3a) 的日期、chunk39[96:100] 的毫秒时间和时区字符串来推断 FA 采集时间；"
+    "若绝对时间不可用，则回退到原始顺序。"
 )
 
 
@@ -73,6 +79,8 @@ class HeidelbergFAStudyInfo:
     device_short_name: str = ""
     timezone1: str = ""
     timezone2: str = ""
+    timezone_offset_hours: float | None = None
+    study_datetime_local: datetime | None = None
     frame_count: int = 0
     series_count: int = 0
     modality_summary: str = ""
@@ -105,6 +113,10 @@ class HeidelbergFAStudyInfo:
         parts = [part for part in [self.timezone1, self.timezone2] if part]
         return " / ".join(parts) if parts else "-"
 
+    @property
+    def study_datetime_iso(self) -> str:
+        return self.study_datetime_local.isoformat(sep=" ") if self.study_datetime_local else "-"
+
 
 @dataclass
 class HeidelbergFAFrame:
@@ -123,6 +135,11 @@ class HeidelbergFAFrame:
     laterality: str
     timezone1: str
     timezone2: str
+    time_of_day_ms: int | None
+    raw_elapsed_ms: int | None
+    raw_elapsed_ms_alt: int | None
+    acquisition_datetime_local: datetime | None
+    acquisition_source: str
     width: int
     height: int
     image: np.ndarray
@@ -160,6 +177,47 @@ class HeidelbergFAFrame:
     def timezone_display(self) -> str:
         parts = [part for part in [self.timezone1, self.timezone2] if part]
         return " / ".join(parts) if parts else "-"
+
+    @property
+    def acquisition_datetime_iso(self) -> str | None:
+        if self.acquisition_datetime_local is None:
+            return None
+        return self.acquisition_datetime_local.isoformat(timespec="milliseconds")
+
+    @property
+    def acquisition_date_iso(self) -> str | None:
+        if self.acquisition_datetime_local is None:
+            return None
+        return self.acquisition_datetime_local.date().isoformat()
+
+    @property
+    def acquisition_time_iso(self) -> str | None:
+        if self.acquisition_datetime_local is None:
+            return None
+        return self.acquisition_datetime_local.time().isoformat(timespec="milliseconds")
+
+    @property
+    def time_display(self) -> str:
+        if self.acquisition_datetime_local is not None:
+            return self.acquisition_datetime_local.isoformat(sep=" ", timespec="milliseconds")
+        if self.time_of_day_ms is not None:
+            milliseconds = self.time_of_day_ms % 1000
+            total_seconds = self.time_of_day_ms // 1000
+            seconds = total_seconds % 60
+            minutes = (total_seconds // 60) % 60
+            hours = (total_seconds // 3600) % 24
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+        return "-"
+
+
+@dataclass
+class Chunk39Timing:
+    time_of_day_ms: int | None
+    raw_elapsed_ms: int | None
+    raw_elapsed_ms_alt: int | None
+    timezone1: str
+    timezone2: str
+    source: str
 
 
 def parse_args() -> argparse.Namespace:
@@ -243,6 +301,120 @@ def parse_birth_date(reader: E2E, raw_value: Any) -> str:
     if isinstance(parsed, date):
         return parsed.isoformat()
     return clean_text(parsed)
+
+
+def parse_ole_datetime(raw_value: float | None) -> datetime | None:
+    if raw_value is None:
+        return None
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        return None
+    if not (-100000 <= value <= 1000000):
+        return None
+    try:
+        return datetime(1899, 12, 30) + timedelta(days=value)
+    except OverflowError:
+        return None
+
+
+def normalize_timezone_name(value: str) -> str:
+    return clean_text(value).casefold()
+
+
+def parse_timezone_offset_hours(*values: str) -> float | None:
+    candidates = [normalize_timezone_name(value) for value in values if clean_text(value)]
+    if not candidates:
+        return None
+
+    mapping = {
+        "china standard time": 8.0,
+        "中国标准时间": 8.0,
+        "beijing standard time": 8.0,
+        "utc+08:00": 8.0,
+        "gmt+08:00": 8.0,
+        "china daylight time": 9.0,
+        "中国夏令时": 9.0,
+    }
+    for candidate in candidates:
+        if candidate in mapping:
+            return mapping[candidate]
+        if "china" in candidate and "standard" in candidate:
+            return 8.0
+        if "china" in candidate and "daylight" in candidate:
+            return 9.0
+    return None
+
+
+def parse_study_datetime_from_chunk58(payload: bytes) -> datetime | None:
+    if len(payload) < 14:
+        return None
+    try:
+        raw_value = struct.unpack("<d", payload[6:14])[0]
+    except struct.error:
+        return None
+    return parse_ole_datetime(raw_value)
+
+
+def parse_chunk39_timing(payload: bytes) -> Chunk39Timing:
+    timezone1 = ""
+    timezone2 = ""
+    try:
+        parsed = e2e_binary.time_data.parse(payload)
+        timezone1 = clean_text(getattr(parsed, "timezone1", ""))
+        timezone2 = clean_text(getattr(parsed, "timezone2", ""))
+    except Exception:
+        pass
+
+    time_of_day_ms = None
+    raw_elapsed_ms = None
+    raw_elapsed_ms_alt = None
+    if len(payload) >= 100:
+        candidate = int.from_bytes(payload[96:100], byteorder="little", signed=False)
+        if 0 <= candidate < 86_400_000:
+            time_of_day_ms = candidate
+    if len(payload) >= 364:
+        raw_elapsed_ms = int.from_bytes(payload[360:364], byteorder="little", signed=False)
+    if len(payload) >= 376:
+        raw_elapsed_ms_alt = int.from_bytes(payload[372:376], byteorder="little", signed=False)
+
+    return Chunk39Timing(
+        time_of_day_ms=time_of_day_ms,
+        raw_elapsed_ms=raw_elapsed_ms,
+        raw_elapsed_ms_alt=raw_elapsed_ms_alt,
+        timezone1=timezone1,
+        timezone2=timezone2,
+        source="chunk39[96:100]+timezone",
+    )
+
+
+def choose_frame_datetime(
+    study_datetime_local: datetime | None,
+    study_date_value: date | None,
+    time_of_day_ms: int | None,
+    timezone_offset_hours: float | None,
+) -> tuple[datetime | None, str]:
+    if study_date_value is None or time_of_day_ms is None:
+        return None, ""
+
+    midnight = datetime.combine(study_date_value, datetime.min.time())
+    candidate_local = midnight + timedelta(milliseconds=time_of_day_ms)
+    candidates = [(candidate_local, "study_date + chunk39_ms")]
+
+    if timezone_offset_hours is not None:
+        shifted = candidate_local + timedelta(hours=timezone_offset_hours)
+        candidates.append((shifted, "study_date + chunk39_ms + timezone_offset"))
+
+    if study_datetime_local is not None:
+        best_datetime, best_source = min(
+            candidates,
+            key=lambda item: abs((item[0] - study_datetime_local).total_seconds()),
+        )
+        return best_datetime, best_source
+
+    if len(candidates) > 1:
+        return candidates[-1]
+    return candidates[0]
 
 
 def resolve_input_file(path_text: Optional[str]) -> Optional[Path]:
@@ -355,16 +527,43 @@ def build_frame_metadata_text(
             "examined_structure": frame.examined_structure,
             "width": frame.width,
             "height": frame.height,
+            "time_of_day_ms": frame.time_of_day_ms,
+            "raw_elapsed_ms": frame.raw_elapsed_ms,
+            "raw_elapsed_ms_alt": frame.raw_elapsed_ms_alt,
+            "acquisition_datetime_iso": frame.acquisition_datetime_iso,
+            "acquisition_date_iso": frame.acquisition_date_iso,
+            "acquisition_time_iso": frame.acquisition_time_iso,
+            "acquisition_source": frame.acquisition_source,
             "timezones": [value for value in [frame.timezone1, frame.timezone2] if value],
+        },
+        "study": {
+            "study_datetime_local": study_info.study_datetime_iso,
+            "timezone_offset_hours": study_info.timezone_offset_hours,
         },
         "note": TIME_PARSE_NOTE,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def frame_sort_key(frame: HeidelbergFAFrame) -> tuple[int, int, int, int]:
+def frame_sort_key(frame: HeidelbergFAFrame) -> tuple[int, Any, float, int, int]:
     slice_sort = frame.slice_id if frame.slice_id >= 0 else 10**9 + frame.series_frame_index
-    return frame.series_id, slice_sort, frame.order_index, frame.series_frame_index
+    time_marker = (
+        frame.acquisition_datetime_local
+        if frame.acquisition_datetime_local is not None
+        else datetime.max
+    )
+    raw_marker = (
+        float(frame.time_of_day_ms)
+        if frame.time_of_day_ms is not None
+        else float("inf")
+    )
+    return (
+        0 if frame.acquisition_datetime_local is not None else 1,
+        time_marker,
+        raw_marker,
+        frame.series_id,
+        slice_sort,
+    )
 
 
 def load_heidelberg_fa_dataset(
@@ -381,6 +580,8 @@ def load_heidelberg_fa_dataset(
     series_metadata: dict[str, dict[str, Any]] = {}
     frames: list[HeidelbergFAFrame] = []
     series_frame_counts: Counter[str] = Counter()
+    pending_timing_by_series: defaultdict[str, deque[Chunk39Timing]] = defaultdict(deque)
+    study_date_value: date | None = None
 
     with input_file.open("rb") as handle:
         chunk_stack: list[tuple[int, int]] = []
@@ -416,6 +617,14 @@ def load_heidelberg_fa_dataset(
                     "timezone2": "",
                 },
             )
+
+            if chunk.type == 58:
+                payload = handle.read(chunk.size)
+                parsed_study_datetime = parse_study_datetime_from_chunk58(payload)
+                if parsed_study_datetime is not None:
+                    study_info.study_datetime_local = parsed_study_datetime
+                    study_date_value = parsed_study_datetime.date()
+                continue
 
             if chunk.type == 9:
                 try:
@@ -498,12 +707,10 @@ def load_heidelberg_fa_dataset(
                 continue
 
             if chunk.type == 39:
-                try:
-                    time_data = e2e_binary.time_data.parse(handle.read(chunk.size))
-                except Exception:
-                    continue
-                timezone1 = clean_text(getattr(time_data, "timezone1", ""))
-                timezone2 = clean_text(getattr(time_data, "timezone2", ""))
+                payload = handle.read(chunk.size)
+                timing = parse_chunk39_timing(payload)
+                timezone1 = timing.timezone1
+                timezone2 = timing.timezone2
                 if timezone1 and not study_info.timezone1:
                     study_info.timezone1 = timezone1
                 if timezone2 and not study_info.timezone2:
@@ -512,6 +719,7 @@ def load_heidelberg_fa_dataset(
                     series_entry["timezone1"] = timezone1
                 if timezone2 and not series_entry["timezone2"]:
                     series_entry["timezone2"] = timezone2
+                pending_timing_by_series[series_key].append(timing)
                 continue
 
             if chunk.type == 1073741824 and chunk.ind == 0:
@@ -531,6 +739,7 @@ def load_heidelberg_fa_dataset(
                 image = raw_image.reshape(image_data.height, image_data.width)
                 series_frame_index = series_frame_counts[series_key]
                 series_frame_counts[series_key] += 1
+                timing = pending_timing_by_series[series_key].popleft() if pending_timing_by_series[series_key] else None
 
                 image_id = f"{series_key}:f{series_frame_index + 1:03d}:s{chunk.slice_id}"
                 frames.append(
@@ -548,13 +757,22 @@ def load_heidelberg_fa_dataset(
                         scan_pattern="",
                         examined_structure="",
                         laterality="",
-                        timezone1=series_entry["timezone1"] or study_info.timezone1,
-                        timezone2=series_entry["timezone2"] or study_info.timezone2,
+                        timezone1=(timing.timezone1 if timing else "") or series_entry["timezone1"] or study_info.timezone1,
+                        timezone2=(timing.timezone2 if timing else "") or series_entry["timezone2"] or study_info.timezone2,
+                        time_of_day_ms=timing.time_of_day_ms if timing else None,
+                        raw_elapsed_ms=timing.raw_elapsed_ms if timing else None,
+                        raw_elapsed_ms_alt=timing.raw_elapsed_ms_alt if timing else None,
+                        acquisition_datetime_local=None,
+                        acquisition_source=timing.source if timing else "",
                         width=int(image_data.width),
                         height=int(image_data.height),
                         image=image,
                     )
                 )
+
+    if study_date_value is None and study_info.study_datetime_local is not None:
+        study_date_value = study_info.study_datetime_local.date()
+    study_info.timezone_offset_hours = parse_timezone_offset_hours(study_info.timezone1, study_info.timezone2)
 
     for frame in frames:
         meta = series_metadata.get(frame.series_key, {})
@@ -565,6 +783,14 @@ def load_heidelberg_fa_dataset(
         frame.laterality = clean_text(meta.get("laterality", "")).upper()
         frame.timezone1 = frame.timezone1 or clean_text(meta.get("timezone1", "")) or study_info.timezone1
         frame.timezone2 = frame.timezone2 or clean_text(meta.get("timezone2", "")) or study_info.timezone2
+        frame.acquisition_datetime_local, inferred_source = choose_frame_datetime(
+            study_datetime_local=study_info.study_datetime_local,
+            study_date_value=study_date_value,
+            time_of_day_ms=frame.time_of_day_ms,
+            timezone_offset_hours=study_info.timezone_offset_hours,
+        )
+        if inferred_source:
+            frame.acquisition_source = inferred_source
 
     frames.sort(key=frame_sort_key)
     series_display_counts: Counter[str] = Counter()
@@ -591,6 +817,7 @@ def dump_study_info(study_info: HeidelbergFAStudyInfo) -> None:
     print("birth_date\t", study_info.birth_date or "-")
     print("device\t", study_info.device_display)
     print("timezone\t", study_info.timezone_display)
+    print("study_datetime\t", study_info.study_datetime_iso)
     print("series_count\t", study_info.series_count)
     print("frame_count\t", study_info.frame_count)
     print("modalities\t", study_info.modality_summary or "-")
@@ -600,13 +827,130 @@ def dump_study_info(study_info: HeidelbergFAStudyInfo) -> None:
 
 
 def dump_frames(frames: list[HeidelbergFAFrame]) -> None:
-    print("index\tseries\tmodality\teye\tseries_index\tslice\tsize")
+    print("index\tseries\tmodality\teye\tseries_index\tslice\tsize\tacquisition")
     for frame in frames:
         print(
             f"{frame.order_index + 1}\t{frame.series_id}\t{frame.modality}\t"
             f"{frame.laterality_display}\t{frame.series_frame_index + 1}\t"
-            f"{frame.slice_id}\t{frame.size_display}"
+            f"{frame.slice_id}\t{frame.size_display}\t{frame.time_display}"
         )
+
+
+@dataclass
+class HeidelbergViewerTrack:
+    key: str
+    label: str
+    modality: str
+    laterality: str
+    frame_count: int
+    series_count: int
+    first_datetime_iso: str | None
+    last_datetime_iso: str | None
+    frames: list[HeidelbergFAFrame]
+
+
+def viewer_laterality_label(value: str) -> str:
+    normalized = clean_text(value).upper()
+    if normalized in {"ALL", ""}:
+        return "双眼"
+    return laterality_to_chinese(normalized)
+
+
+def viewer_modality_label(value: str) -> str:
+    normalized = clean_text(value).upper()
+    return normalized or "全部模式"
+
+
+def build_track_label(
+    modality: str,
+    laterality: str,
+    frames: list[HeidelbergFAFrame],
+) -> str:
+    modality_text = "全部模式" if modality == "ALL" else viewer_modality_label(modality)
+    laterality_text = viewer_laterality_label(laterality)
+    first_iso = next((frame.acquisition_datetime_iso for frame in frames if frame.acquisition_datetime_iso), None)
+    last_iso = next((frame.acquisition_datetime_iso for frame in reversed(frames) if frame.acquisition_datetime_iso), None)
+    time_suffix = ""
+    if first_iso and last_iso and first_iso != last_iso:
+        time_suffix = f" | {first_iso.split('T')[-1]} → {last_iso.split('T')[-1]}"
+    elif first_iso:
+        time_suffix = f" | {first_iso.split('T')[-1]}"
+    return (
+        f"{modality_text} | {laterality_text} | "
+        f"{len(frames)} 帧 | {len({frame.series_key for frame in frames})} 序列{time_suffix}"
+    )
+
+
+def build_heidelberg_viewer_tracks(
+    frames: list[HeidelbergFAFrame],
+) -> list[HeidelbergViewerTrack]:
+    grouped: dict[tuple[str, str], list[HeidelbergFAFrame]] = {}
+
+    if frames:
+        grouped[("ALL", "ALL")] = list(frames)
+
+    modalities = sorted({frame.modality for frame in frames}, key=modality_sort_key)
+    lateralities = sorted({frame.laterality or "UNKNOWN" for frame in frames})
+
+    for modality in modalities:
+        modality_frames = [frame for frame in frames if frame.modality == modality]
+        if modality_frames:
+            grouped[(modality, "ALL")] = modality_frames
+        for laterality in lateralities:
+            filtered = [
+                frame
+                for frame in modality_frames
+                if (frame.laterality or "UNKNOWN") == laterality
+            ]
+            if filtered:
+                grouped[(modality, laterality)] = filtered
+
+    def sort_key(item: tuple[tuple[str, str], list[HeidelbergFAFrame]]) -> tuple[int, int, str, str]:
+        (modality, laterality), _frames = item
+        if modality == "ALL" and laterality == "ALL":
+            return (0, 0, "", "")
+        if laterality == "ALL":
+            return (1, modality_sort_key(modality)[0], modality, laterality)
+        return (2, modality_sort_key(modality)[0], modality, laterality)
+
+    tracks: list[HeidelbergViewerTrack] = []
+    for (modality, laterality), grouped_frames in sorted(grouped.items(), key=sort_key):
+        label = build_track_label(modality, laterality, grouped_frames)
+        tracks.append(
+            HeidelbergViewerTrack(
+                key=f"{modality}:{laterality}",
+                label=label,
+                modality=modality,
+                laterality=laterality,
+                frame_count=len(grouped_frames),
+                series_count=len({frame.series_key for frame in grouped_frames}),
+                first_datetime_iso=next(
+                    (frame.acquisition_datetime_iso for frame in grouped_frames if frame.acquisition_datetime_iso),
+                    None,
+                ),
+                last_datetime_iso=next(
+                    (
+                        frame.acquisition_datetime_iso
+                        for frame in reversed(grouped_frames)
+                        if frame.acquisition_datetime_iso
+                    ),
+                    None,
+                ),
+                frames=grouped_frames,
+            )
+        )
+    return tracks
+
+
+def summarize_tracks_for_console(tracks: list[HeidelbergViewerTrack]) -> list[str]:
+    lines: list[str] = []
+    for track in tracks:
+        lines.append(track.label)
+    return lines
+
+
+def frame_time_text(frame: HeidelbergFAFrame) -> str:
+    return frame.time_display
 
 
 if QT_AVAILABLE:
@@ -1310,6 +1654,697 @@ if QT_AVAILABLE:
             self.frame_structure_label.setText("-")
             self.frame_time_label.setText("-")
 
+if QT_AVAILABLE:
+
+    class ViewerCanvas(FigureCanvas):
+        def __init__(self):
+            figure = Figure(figsize=(12, 8), facecolor="#111827")
+            self.figure = figure
+            self.ax_image = figure.add_subplot(2, 1, 1)
+            self.ax_timeline = figure.add_subplot(2, 1, 2)
+            figure.subplots_adjust(left=0.04, right=0.985, top=0.95, bottom=0.07, hspace=0.24)
+            super().__init__(figure)
+            self._style_axes()
+
+        def _style_axes(self):
+            for axis in (self.ax_image, self.ax_timeline):
+                axis.set_facecolor("#0B1220")
+                axis.tick_params(colors="#CBD5E1")
+                for spine in axis.spines.values():
+                    spine.set_color("#334155")
+
+        def clear_views(self):
+            self.ax_image.clear()
+            self.ax_timeline.clear()
+            self._style_axes()
+            self.ax_image.set_title("Heidelberg FA", color="#E5E7EB")
+            self.ax_timeline.set_title("Timeline", color="#E5E7EB")
+            self.draw_idle()
+
+
+    class HeidelbergFAZeissViewerWindow(QMainWindow):
+        def __init__(self, startup_path: str | None):
+            super().__init__()
+            self.settings = QSettings("OpenAI", "HeidelbergFAQtViewer")
+            self.input_file: Path | None = None
+            self.study_info = HeidelbergFAStudyInfo()
+            self.frames: list[HeidelbergFAFrame] = []
+            self.tracks: list[HeidelbergViewerTrack] = []
+            self.current_track_index = 0
+            self.current_frame_index = 0
+            self.playing = False
+            self.canvas = ViewerCanvas()
+            self.play_timer = QTimer(self)
+            self.play_timer.timeout.connect(self.advance_frame)
+
+            self.setWindowTitle("Heidelberg FA Viewer")
+            self.resize(1520, 940)
+            self.setFont(QFont("Microsoft YaHei UI", 10))
+            self._apply_styles()
+            self.setStatusBar(QStatusBar(self))
+
+            self._build_controls()
+            self._build_toolbar()
+            self._build_layout()
+            self._install_shortcuts()
+            self._set_empty_state()
+
+            self.canvas.mpl_connect("scroll_event", self.on_canvas_scroll)
+
+            if startup_path:
+                self.path_edit.setText(str(startup_path))
+            remembered_dir = self.settings.value("last_dir", "", type=str)
+            if not self.path_edit.text().strip() and remembered_dir:
+                self.path_edit.setText(remembered_dir)
+
+            initial_path = self.path_edit.text().strip()
+            if initial_path and resolve_input_file(initial_path) and resolve_input_file(initial_path).exists():
+                self.load_path(initial_path)
+
+        def _apply_styles(self):
+            self.setStyleSheet(
+                """
+                QMainWindow, QWidget { background: #111827; color: #E5E7EB; }
+                QToolBar { background: #0F172A; border: none; spacing: 6px; padding: 6px; }
+                QPushButton {
+                    background: #1F2937;
+                    color: #E5E7EB;
+                    border: 1px solid #334155;
+                    border-radius: 8px;
+                    padding: 8px 12px;
+                }
+                QPushButton:hover { background: #273449; }
+                QPushButton:pressed { background: #334155; }
+                QLineEdit, QComboBox, QSpinBox, QPlainTextEdit {
+                    background: #0B1220;
+                    border: 1px solid #334155;
+                    border-radius: 8px;
+                    padding: 6px 8px;
+                    color: #E5E7EB;
+                }
+                QGroupBox {
+                    border: 1px solid #334155;
+                    border-radius: 10px;
+                    margin-top: 10px;
+                    padding-top: 12px;
+                    font-weight: 700;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin;
+                    left: 12px;
+                    padding: 0 4px;
+                }
+                QLabel#SummaryLabel, QLabel#PathLabel, QLabel#FrameInfo {
+                    color: #CBD5E1;
+                }
+                """
+            )
+
+        def _build_controls(self):
+            self.path_edit = QLineEdit()
+            self.path_edit.returnPressed.connect(self.reload_from_path)
+
+            self.open_button = QPushButton("Open")
+            self.open_button.clicked.connect(self.open_path_dialog)
+
+            self.reload_button = QPushButton("Reload")
+            self.reload_button.clicked.connect(self.reload_from_path)
+
+            self.sequence_combo = QComboBox()
+            self.sequence_combo.currentIndexChanged.connect(self.on_track_changed)
+
+            self.frame_slider = QSlider(Qt.Horizontal)
+            self.frame_slider.setMinimum(0)
+            self.frame_slider.setSingleStep(1)
+            self.frame_slider.valueChanged.connect(self.on_frame_changed)
+
+            self.frame_spin = QSpinBox()
+            self.frame_spin.setMinimum(0)
+            self.frame_spin.valueChanged.connect(self.on_frame_changed)
+
+            self.prev_button = QPushButton("Prev")
+            self.prev_button.clicked.connect(self.previous_frame)
+
+            self.next_button = QPushButton("Next")
+            self.next_button.clicked.connect(self.next_frame)
+
+            self.play_button = QPushButton("Play")
+            self.play_button.clicked.connect(self.toggle_playback)
+
+            self.fps_spin = QSpinBox()
+            self.fps_spin.setRange(1, 30)
+            self.fps_spin.setValue(4)
+            self.fps_spin.valueChanged.connect(self._refresh_timer)
+
+            self.contrast_slider = QSlider(Qt.Horizontal)
+            self.contrast_slider.setRange(50, 200)
+            self.contrast_slider.setValue(100)
+            self.contrast_slider.valueChanged.connect(self.redraw_views)
+
+            self.brightness_slider = QSlider(Qt.Horizontal)
+            self.brightness_slider.setRange(-80, 80)
+            self.brightness_slider.setValue(0)
+            self.brightness_slider.valueChanged.connect(self.redraw_views)
+
+            self.path_label = QLabel("No dataset loaded")
+            self.path_label.setWordWrap(True)
+            self.path_label.setObjectName("PathLabel")
+            self.path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+            self.summary_label = QLabel("Ready to load Heidelberg FA data")
+            self.summary_label.setWordWrap(True)
+            self.summary_label.setObjectName("SummaryLabel")
+
+            self.frame_info_label = QLabel("Frame: -")
+            self.frame_info_label.setObjectName("FrameInfo")
+
+            self.track_info_label = QLabel("Track: -")
+            self.time_info_label = QLabel("Time: -")
+            self.absolute_time_label = QLabel("Absolute: -")
+            self.elapsed_time_label = QLabel("Elapsed: -")
+            self.source_info_label = QLabel("Source: -")
+            self.eye_label = QLabel("Eye: -")
+            self.patient_name_label = QLabel("Name: -")
+            self.patient_id_label = QLabel("ID: -")
+            self.patient_sex_label = QLabel("Sex: -")
+            self.patient_birth_label = QLabel("DOB: -")
+            self.device_label = QLabel("Device: -")
+            self.absolute_time_label.setWordWrap(True)
+            self.elapsed_time_label.setWordWrap(True)
+            self.source_info_label.setWordWrap(True)
+            self.eye_label.setWordWrap(True)
+            self.patient_name_label.setWordWrap(True)
+            self.patient_id_label.setWordWrap(True)
+            self.patient_sex_label.setWordWrap(True)
+            self.patient_birth_label.setWordWrap(True)
+            self.device_label.setWordWrap(True)
+            stable_labels = [
+                self.frame_info_label,
+                self.track_info_label,
+                self.time_info_label,
+                self.absolute_time_label,
+                self.elapsed_time_label,
+                self.source_info_label,
+                self.eye_label,
+                self.patient_name_label,
+                self.patient_id_label,
+                self.patient_sex_label,
+                self.patient_birth_label,
+                self.device_label,
+            ]
+            for label in stable_labels:
+                label.setWordWrap(False)
+                label.setMinimumHeight(24)
+                label.setMaximumHeight(24)
+
+            self.metadata_edit = QPlainTextEdit()
+            self.metadata_edit.setReadOnly(True)
+            self.metadata_edit.setFont(QFont("Consolas", 10))
+
+        def _build_toolbar(self):
+            toolbar = QToolBar("Actions", self)
+            toolbar.setMovable(False)
+            self.addToolBar(toolbar)
+
+            open_action = QAction("Open", self)
+            open_action.triggered.connect(self.open_path_dialog)
+            toolbar.addAction(open_action)
+
+            reload_action = QAction("Reload", self)
+            reload_action.triggered.connect(self.reload_from_path)
+            toolbar.addAction(reload_action)
+
+            save_action = QAction("Save Frame", self)
+            save_action.triggered.connect(self.save_current_frame)
+            toolbar.addAction(save_action)
+
+            export_action = QAction("Export Track", self)
+            export_action.triggered.connect(self.export_current_track)
+            toolbar.addAction(export_action)
+
+            play_action = QAction("Play/Pause", self)
+            play_action.triggered.connect(self.toggle_playback)
+            toolbar.addAction(play_action)
+
+        def _build_layout(self):
+            path_group = QGroupBox("Input")
+            path_layout = QVBoxLayout(path_group)
+            path_row = QHBoxLayout()
+            path_row.addWidget(self.path_edit, stretch=1)
+            path_row.addWidget(self.open_button)
+            path_row.addWidget(self.reload_button)
+            path_layout.addLayout(path_row)
+            path_layout.addWidget(self.path_label)
+
+            navigation_group = QGroupBox("Navigation")
+            navigation_layout = QGridLayout(navigation_group)
+            navigation_layout.addWidget(QLabel("Track"), 0, 0)
+            navigation_layout.addWidget(self.sequence_combo, 0, 1, 1, 3)
+            navigation_layout.addWidget(QLabel("Frame"), 1, 0)
+            navigation_layout.addWidget(self.frame_slider, 1, 1, 1, 3)
+            navigation_layout.addWidget(self.prev_button, 2, 0)
+            navigation_layout.addWidget(self.frame_spin, 2, 1)
+            navigation_layout.addWidget(self.next_button, 2, 2)
+            navigation_layout.addWidget(self.play_button, 2, 3)
+            navigation_layout.addWidget(QLabel("FPS"), 3, 0)
+            navigation_layout.addWidget(self.fps_spin, 3, 1)
+            navigation_layout.addWidget(self.frame_info_label, 3, 2, 1, 2)
+
+            display_group = QGroupBox("Display")
+            display_layout = QFormLayout(display_group)
+            display_layout.addRow("Contrast", self.contrast_slider)
+            display_layout.addRow("Brightness", self.brightness_slider)
+            display_layout.addRow("Track info", self.track_info_label)
+            display_layout.addRow("Eye", self.eye_label)
+            display_layout.addRow("Time info", self.time_info_label)
+            display_layout.addRow("Absolute time", self.absolute_time_label)
+            display_layout.addRow("Elapsed", self.elapsed_time_label)
+            display_layout.addRow("Source", self.source_info_label)
+
+            patient_group = QGroupBox("Patient")
+            patient_layout = QFormLayout(patient_group)
+            patient_layout.addRow("Name", self.patient_name_label)
+            patient_layout.addRow("ID", self.patient_id_label)
+            patient_layout.addRow("Sex", self.patient_sex_label)
+            patient_layout.addRow("Birth date", self.patient_birth_label)
+            patient_layout.addRow("Device", self.device_label)
+
+            summary_group = QGroupBox("Summary")
+            summary_layout = QVBoxLayout(summary_group)
+            summary_layout.addWidget(self.summary_label)
+
+            metadata_group = QGroupBox("Metadata")
+            metadata_layout = QVBoxLayout(metadata_group)
+            metadata_layout.addWidget(self.metadata_edit)
+
+            control_widget = QWidget()
+            control_widget.setMinimumWidth(420)
+            control_widget.setMaximumWidth(420)
+            control_layout = QVBoxLayout(control_widget)
+            control_layout.setContentsMargins(0, 0, 0, 0)
+            control_layout.addWidget(path_group)
+            control_layout.addWidget(navigation_group)
+            control_layout.addWidget(display_group)
+            control_layout.addWidget(patient_group)
+            control_layout.addWidget(summary_group)
+            control_layout.addWidget(metadata_group, stretch=1)
+
+            view_widget = QWidget()
+            view_layout = QVBoxLayout(view_widget)
+            view_layout.setContentsMargins(0, 0, 0, 0)
+            view_layout.addWidget(self.canvas)
+
+            splitter = QSplitter()
+            splitter.addWidget(control_widget)
+            splitter.addWidget(view_widget)
+            splitter.setChildrenCollapsible(False)
+            splitter.setStretchFactor(0, 0)
+            splitter.setStretchFactor(1, 1)
+            splitter.setSizes([420, 1080])
+
+            container = QWidget()
+            container_layout = QHBoxLayout(container)
+            container_layout.setContentsMargins(10, 10, 10, 10)
+            container_layout.addWidget(splitter)
+            self.setCentralWidget(container)
+
+        def _install_shortcuts(self):
+            QShortcut(QKeySequence(Qt.Key_Left), self, self.previous_frame)
+            QShortcut(QKeySequence(Qt.Key_Right), self, self.next_frame)
+            QShortcut(QKeySequence(Qt.Key_Space), self, self.toggle_playback)
+            QShortcut(QKeySequence("Ctrl+O"), self, self.open_path_dialog)
+            QShortcut(QKeySequence("Ctrl+S"), self, self.save_current_frame)
+
+        def _set_empty_state(self):
+            self.sequence_combo.blockSignals(True)
+            self.sequence_combo.clear()
+            self.sequence_combo.blockSignals(False)
+
+            self.frame_slider.blockSignals(True)
+            self.frame_slider.setMaximum(0)
+            self.frame_slider.setValue(0)
+            self.frame_slider.blockSignals(False)
+
+            self.frame_spin.blockSignals(True)
+            self.frame_spin.setMaximum(0)
+            self.frame_spin.setValue(0)
+            self.frame_spin.blockSignals(False)
+
+            self.frame_info_label.setText("Frame: -")
+            self.track_info_label.setText("Track: -")
+            self.eye_label.setText("Eye: -")
+            self.time_info_label.setText("Time: -")
+            self.absolute_time_label.setText("Absolute: -")
+            self.elapsed_time_label.setText("Elapsed: -")
+            self.source_info_label.setText("Source: -")
+            self.patient_name_label.setText("Name: -")
+            self.patient_id_label.setText("ID: -")
+            self.patient_sex_label.setText("Sex: -")
+            self.patient_birth_label.setText("DOB: -")
+            self.device_label.setText("Device: -")
+            self.metadata_edit.setPlainText("")
+            self.summary_label.setText("Ready to load Heidelberg FA data")
+            self.path_label.setText("No dataset loaded")
+            self.canvas.clear_views()
+
+        def current_track(self) -> HeidelbergViewerTrack | None:
+            if not self.tracks:
+                return None
+            return self.tracks[self.current_track_index]
+
+        def current_frame(self) -> HeidelbergFAFrame | None:
+            track = self.current_track()
+            if track is None or not track.frames:
+                return None
+            return track.frames[self.current_frame_index]
+
+        def _refresh_timer(self):
+            if self.playing:
+                interval_ms = max(1, int(round(1000 / max(self.fps_spin.value(), 1))))
+                self.play_timer.start(interval_ms)
+
+        def open_path_dialog(self):
+            start_dir = (
+                self.path_edit.text().strip()
+                or self.settings.value("last_dir", "", type=str)
+                or str(DEFAULT_INPUT_PATH)
+            )
+            selected, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Heidelberg E2E file",
+                start_dir,
+                "Heidelberg E2E (*.E2E *.e2e);;All Files (*)",
+            )
+            if not selected:
+                return
+            self.path_edit.setText(selected)
+            self.load_path(selected)
+
+        def reload_from_path(self):
+            self.load_path(self.path_edit.text().strip())
+
+        def load_path(self, path_text: str):
+            if not path_text:
+                QMessageBox.warning(self, "Missing path", "Please choose a Heidelberg E2E file.")
+                return
+
+            try:
+                input_file, study_info, frames = load_heidelberg_fa_dataset(path_text)
+            except Exception as exc:
+                QMessageBox.critical(self, "Load failed", str(exc))
+                return
+
+            if input_file is None or not frames:
+                QMessageBox.warning(self, "No frames", "No Heidelberg FA frames were found.")
+                return
+
+            self.input_file = input_file
+            self.study_info = study_info
+            self.frames = frames
+            self.tracks = build_heidelberg_viewer_tracks(frames)
+            self.current_track_index = 0
+            self.current_frame_index = 0
+            self.path_label.setText(str(input_file))
+            self.settings.setValue("last_dir", str(input_file.parent))
+
+            self.sequence_combo.blockSignals(True)
+            self.sequence_combo.clear()
+            for track in self.tracks:
+                self.sequence_combo.addItem(track.label)
+            self.sequence_combo.blockSignals(False)
+            self.sequence_combo.setCurrentIndex(0)
+
+            summary_lines = summarize_tracks_for_console(self.tracks)
+            summary_text = "Loaded tracks:\n" + "\n".join(summary_lines[:8])
+            if len(summary_lines) > 8:
+                summary_text += "\n..."
+            summary_text += (
+                f"\n\nPatient: {study_info.patient_name or '-'} | ID: {study_info.patient_id or '-'} | "
+                f"Sex: {study_info.sex_display} | DOB: {study_info.birth_date or '-'}"
+            )
+            summary_text += (
+                f"\nDevice: {study_info.device_display} | Study: {study_info.study_datetime_iso} | "
+                f"TZ: {study_info.timezone_display}"
+            )
+            summary_text += f"\nNote: {study_info.timing_note}"
+            self.summary_label.setText(summary_text)
+            self.refresh_track()
+
+        def refresh_track(self):
+            track = self.current_track()
+            if track is None:
+                self._set_empty_state()
+                return
+
+            self.current_frame_index = min(self.current_frame_index, max(track.frame_count - 1, 0))
+
+            self.frame_slider.blockSignals(True)
+            self.frame_slider.setMaximum(max(track.frame_count - 1, 0))
+            self.frame_slider.setValue(self.current_frame_index)
+            self.frame_slider.blockSignals(False)
+
+            self.frame_spin.blockSignals(True)
+            self.frame_spin.setMaximum(max(track.frame_count - 1, 0))
+            self.frame_spin.setValue(self.current_frame_index)
+            self.frame_spin.setSuffix(f" / {track.frame_count}")
+            self.frame_spin.blockSignals(False)
+
+            self.track_info_label.setText(
+                f"{track.label} | first={track.first_datetime_iso or '-'} | last={track.last_datetime_iso or '-'}"
+            )
+            self.eye_label.setText(viewer_laterality_label(track.laterality))
+            self.patient_name_label.setText(self.study_info.patient_name or "-")
+            self.patient_id_label.setText(self.study_info.patient_id or "-")
+            self.patient_sex_label.setText(self.study_info.sex_display)
+            self.patient_birth_label.setText(self.study_info.birth_date or "-")
+            self.device_label.setText(self.study_info.device_display)
+            self.redraw_views()
+
+        def redraw_views(self):
+            track = self.current_track()
+            frame = self.current_frame()
+            if track is None or frame is None:
+                self._set_empty_state()
+                return
+
+            display_image = apply_image_window(
+                frame.image,
+                contrast_percent=self.contrast_slider.value(),
+                brightness_offset=self.brightness_slider.value(),
+            )
+
+            self.canvas.ax_image.clear()
+            self.canvas.ax_timeline.clear()
+            self.canvas._style_axes()
+
+            time_text = frame_time_text(frame)
+
+            if display_image.ndim == 2:
+                self.canvas.ax_image.imshow(display_image, cmap="gray", origin="upper")
+            else:
+                self.canvas.ax_image.imshow(display_image[:, :, :3], origin="upper")
+            self.canvas.ax_image.axis("off")
+            self.canvas.ax_image.set_title(
+                f"Eye: {viewer_laterality_label(track.laterality)} | Frame {self.current_frame_index + 1}/{track.frame_count} | {time_text}",
+                color="#E5E7EB",
+            )
+
+            datetime_frames = [item for item in track.frames if item.acquisition_datetime_local is not None]
+            has_elapsed_time = bool(datetime_frames)
+            if has_elapsed_time:
+                first_datetime = datetime_frames[0].acquisition_datetime_local
+                x_values = [
+                    (
+                        (item.acquisition_datetime_local - first_datetime).total_seconds()
+                        if item.acquisition_datetime_local is not None
+                        else float(index)
+                    )
+                    for index, item in enumerate(track.frames)
+                ]
+            elif any(item.time_of_day_ms is not None for item in track.frames):
+                base_time = min(item.time_of_day_ms for item in track.frames if item.time_of_day_ms is not None)
+                x_values = [
+                    (
+                        (item.time_of_day_ms - base_time) / 1000.0
+                        if item.time_of_day_ms is not None
+                        else float(index)
+                    )
+                    for index, item in enumerate(track.frames)
+                ]
+                has_elapsed_time = True
+            else:
+                x_values = [float(index) for index, _item in enumerate(track.frames)]
+
+            colors = ["#64748B"] * len(track.frames)
+            sizes = [36] * len(track.frames)
+            colors[self.current_frame_index] = "#F97316"
+            sizes[self.current_frame_index] = 80
+
+            self.canvas.ax_timeline.scatter(
+                x_values,
+                [1.0] * len(x_values),
+                c=colors,
+                s=sizes,
+                alpha=0.95,
+            )
+
+            current_series = None
+            for index, item in enumerate(track.frames):
+                if item.series_key != current_series:
+                    current_series = item.series_key
+                    self.canvas.ax_timeline.axvline(
+                        x_values[index],
+                        color="#334155",
+                        linestyle="--",
+                        linewidth=0.8,
+                        alpha=0.7,
+                    )
+
+            self.canvas.ax_timeline.set_yticks([])
+            self.canvas.ax_timeline.set_ylim(0.7, 1.3)
+            self.canvas.ax_timeline.set_xlabel(
+                "Elapsed seconds" if has_elapsed_time else "Frame order",
+                color="#CBD5E1",
+            )
+            self.canvas.ax_timeline.set_title("Acquisition timeline", color="#E5E7EB")
+            self.canvas.ax_timeline.grid(True, axis="x", color="#1E293B", linewidth=0.8, alpha=0.8)
+            self.canvas.ax_timeline.axvline(
+                x_values[self.current_frame_index],
+                color="#F97316",
+                linewidth=1.4,
+                alpha=0.9,
+            )
+
+            elapsed_text = "-"
+            if has_elapsed_time:
+                elapsed_text = f"{x_values[self.current_frame_index]:.3f}s"
+
+            self.frame_info_label.setText(f"Frame: {self.current_frame_index + 1}/{track.frame_count}")
+            self.time_info_label.setText(f"{time_text} | elapsed={elapsed_text}")
+            self.absolute_time_label.setText(frame.acquisition_datetime_iso or frame.time_display)
+            self.elapsed_time_label.setText(elapsed_text)
+            self.source_info_label.setText(
+                f"Series {frame.series_id} | {frame.modality_display} | {frame.acquisition_source or '-'}"
+            )
+            self.metadata_edit.setPlainText(
+                build_frame_metadata_text(self.input_file, self.study_info, frame) if self.input_file else frame.metadata_text
+            )
+            self.statusBar().showMessage(
+                f"{self.study_info.patient_name or '-'} | series {frame.series_id} | frame {self.current_frame_index + 1}/{track.frame_count} | {time_text}"
+            )
+            self.canvas.draw_idle()
+
+        def set_frame_index(self, index: int):
+            track = self.current_track()
+            if track is None or not track.frames:
+                return
+
+            self.current_frame_index = max(0, min(index, track.frame_count - 1))
+
+            self.frame_slider.blockSignals(True)
+            self.frame_slider.setValue(self.current_frame_index)
+            self.frame_slider.blockSignals(False)
+
+            self.frame_spin.blockSignals(True)
+            self.frame_spin.setValue(self.current_frame_index)
+            self.frame_spin.blockSignals(False)
+
+            self.redraw_views()
+
+        def previous_frame(self):
+            self.set_frame_index(self.current_frame_index - 1)
+
+        def next_frame(self):
+            self.set_frame_index(self.current_frame_index + 1)
+
+        def advance_frame(self):
+            track = self.current_track()
+            if track is None or not track.frames:
+                self.toggle_playback(force_stop=True)
+                return
+            next_index = (self.current_frame_index + 1) % track.frame_count
+            self.set_frame_index(next_index)
+
+        def toggle_playback(self, force_stop: bool = False):
+            if force_stop:
+                self.playing = False
+            else:
+                self.playing = not self.playing
+
+            if self.playing:
+                self.play_button.setText("Pause")
+                self._refresh_timer()
+            else:
+                self.play_button.setText("Play")
+                self.play_timer.stop()
+
+        def on_track_changed(self, index: int):
+            if index < 0 or index >= len(self.tracks):
+                return
+            self.current_track_index = index
+            self.current_frame_index = 0
+            self.refresh_track()
+
+        def on_frame_changed(self, value: int):
+            self.set_frame_index(int(value))
+
+        def on_canvas_scroll(self, event):
+            if event.button == "up":
+                self.next_frame()
+            elif event.button == "down":
+                self.previous_frame()
+
+        def save_current_frame(self):
+            frame = self.current_frame()
+            if frame is None or self.input_file is None:
+                return
+            default_name = (
+                f"{safe_slug(self.input_file.stem)}_"
+                f"{safe_slug(frame.modality)}_"
+                f"{safe_slug(frame.laterality or 'eye')}_"
+                f"s{frame.series_id}_f{frame.series_frame_index + 1:03d}.png"
+            )
+            start_dir = self.settings.value("last_export_dir", str(self.input_file.parent), type=str)
+            output_path_text, _ = QFileDialog.getSaveFileName(
+                self,
+                "保存当前帧",
+                str(Path(start_dir) / default_name),
+                "PNG (*.png);;BMP (*.bmp);;JPEG (*.jpg *.jpeg)",
+            )
+            if not output_path_text:
+                return
+            output_path = Path(output_path_text)
+            try:
+                save_image_array(frame.image, output_path)
+            except Exception as exc:
+                QMessageBox.critical(self, "保存失败", str(exc))
+                return
+            self.settings.setValue("last_export_dir", str(output_path.parent))
+            self.statusBar().showMessage(f"已保存：{output_path}", 5000)
+
+        def export_current_track(self):
+            track = self.current_track()
+            if track is None or self.input_file is None:
+                return
+            start_dir = self.settings.value("last_export_dir", str(self.input_file.parent), type=str)
+            selected_dir = QFileDialog.getExistingDirectory(self, "选择导出目录", start_dir)
+            if not selected_dir:
+                return
+            output_dir = Path(selected_dir)
+            try:
+                for index, frame in enumerate(track.frames, start=1):
+                    filename = (
+                        f"{index:03d}_ord{frame.order_index + 1:03d}_"
+                        f"s{frame.series_id}_f{frame.series_frame_index + 1:03d}_"
+                        f"{safe_slug(frame.modality)}_{safe_slug(frame.laterality or 'eye')}.png"
+                    )
+                    save_image_array(frame.image, output_dir / filename)
+            except Exception as exc:
+                QMessageBox.critical(self, "导出失败", str(exc))
+                return
+            self.settings.setValue("last_export_dir", str(output_dir))
+            self.statusBar().showMessage(f"已导出 {len(track.frames)} 帧到：{output_dir}", 5000)
+
 
 def main() -> int:
     args = parse_args()
@@ -1335,7 +2370,7 @@ def main() -> int:
     application.setApplicationName("HeidelbergFAQtViewer")
     application.setStyle("Fusion")
 
-    window = HeidelbergFAViewerWindow(args.input_path)
+    window = HeidelbergFAZeissViewerWindow(args.input_path)
     window.show()
     return application.exec_()
 

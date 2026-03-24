@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from scripts.parse_shiwei_location import (
+from scripts.oct.parse_shiwei_location import (
     load_shiwei_oct_dataset as _load_shiwei_oct_dataset_from_script,
     resolve_input_files as _resolve_input_files,
 )

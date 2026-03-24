@@ -59,17 +59,17 @@ python web_viewer/oct_web_viewer.py /path/to/file.img --img-rows 1024 --img-cols
 
 ### Unified FA Qt viewer
 
-There is also a unified Qt viewer for Topcon and Zeiss FA datasets:
+There is also a unified Qt viewer for Topcon, Zeiss, and HDB / Heidelberg FA datasets:
 
 ```bash
 python scripts/fa_qt_viewer.py /path/to/fa_dataset
 python scripts/fa_qt_viewer.py /path/to/zeiss_series --vendor zeiss
 python scripts/fa_qt_viewer.py /path/to/topcon_folder --vendor topcon
+python scripts/fa_qt_viewer.py /path/to/file.e2e --vendor hdb
 ```
 
-The viewer keeps the Topcon-style frame browser layout, auto-detects `Topcon` folders
-(`DATAFILE` + `IM*.JPG`) and `Zeiss` DICOM datasets, and uses a single timeline/table workflow
-for both vendors.
+The viewer auto-detects `Topcon` folders (`DATAFILE` + `IM*.JPG`), `Zeiss` DICOM datasets, and
+`HDB / Heidelberg` `.E2E` files, and uses a single workflow for all supported FA vendors.
 
 Here is an example of reading a .fds file:
 

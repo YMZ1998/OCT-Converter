@@ -268,6 +268,52 @@
     #stage {
       padding: 8px;
     }
+    .stage-stack {
+      position: relative;
+      display: inline-block;
+      line-height: 0;
+      flex: 0 0 auto;
+    }
+    .overlay-canvas {
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+    }
+    .measurement-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(2, 6, 23, 0.68);
+    }
+    .measurement-toolbar button.active {
+      background: var(--accent);
+      color: #082f49;
+      border-color: transparent;
+      box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.22) inset;
+    }
+    .measurement-readout {
+      flex: 1 1 260px;
+      min-height: 40px;
+      display: flex;
+      align-items: center;
+      padding: 8px 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      background: rgba(15, 23, 42, 0.75);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .measurement-readout.active {
+      color: var(--text);
+    }
+    .measurement-readout.warning {
+      color: #fde68a;
+    }
     .contour-stage {
       align-items: stretch;
       justify-content: flex-start;
@@ -288,6 +334,15 @@
     }
 
     .empty { color: var(--muted); text-align: center; padding: 24px; line-height: 1.8; }
+    .canvas-stage > .empty {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 4;
+      pointer-events: none;
+    }
     .thumb {
       width: 100%;
       border-radius: 12px;
@@ -450,9 +505,18 @@
               <div class="view-panel">
                 <div class="view-title" id="bscanViewTitle">当前 B-Scan</div>
                 <div class="hint view-hint" id="bscanViewHint">右侧显示与左侧定位线匹配的当前切片。</div>
+                <div class="measurement-toolbar">
+                  <button id="measurementModeButton" type="button" class="secondary">测量关</button>
+                  <button id="measurementDeleteButton" type="button" class="secondary">删除选中</button>
+                  <button id="measurementClearButton" type="button" class="secondary">清空当前切片</button>
+                  <div id="measurementReadout" class="measurement-readout">开启测量后可在 B-scan 上点击两点创建线段。</div>
+                </div>
                 <div class="canvas-stage" id="stage">
-              <canvas id="octCanvas" width="1024" height="512"></canvas>
-              <div id="emptyState" class="empty"></div>
+                  <div id="bscanCanvasStack" class="stage-stack">
+                    <canvas id="octCanvas" width="1024" height="512"></canvas>
+                    <canvas id="measurementCanvas" class="overlay-canvas" width="1024" height="512"></canvas>
+                  </div>
+                  <div id="emptyState" class="empty"></div>
                 </div>
               </div>
 
@@ -550,6 +614,15 @@
       contourVisibility: new Map(),
       overlayDisplay: "box",
       vendorMode: "auto",
+      measurementMode: false,
+      measurementDraftStart: null,
+      measurementHoverPoint: null,
+      measurementHoverHandle: null,
+      measurementDrag: null,
+      measurementSuppressClick: false,
+      measurementsBySlice: new Map(),
+      selectedMeasurementIds: new Set(),
+      nextMeasurementId: 1,
     };
 
     const CONTOUR_COLORS = ["#38bdf8", "#22c55e", "#f97316", "#f43f5e", "#a78bfa", "#facc15"];
@@ -584,6 +657,10 @@
       zoomInButton: document.getElementById("zoomInButton"),
       overlayButton: document.getElementById("overlayButton"),
       infoButton: document.getElementById("infoButton"),
+      measurementModeButton: document.getElementById("measurementModeButton"),
+      measurementDeleteButton: document.getElementById("measurementDeleteButton"),
+      measurementClearButton: document.getElementById("measurementClearButton"),
+      measurementReadout: document.getElementById("measurementReadout"),
       contrastSlider: document.getElementById("contrastSlider"),
       brightnessSlider: document.getElementById("brightnessSlider"),
       speedSlider: document.getElementById("speedSlider"),
@@ -598,8 +675,10 @@
       fundusViewHint: document.getElementById("fundusViewHint"),
       bscanViewTitle: document.getElementById("bscanViewTitle"),
       bscanViewHint: document.getElementById("bscanViewHint"),
+      bscanCanvasStack: document.getElementById("bscanCanvasStack"),
       fundusCanvas: document.getElementById("fundusCanvas"),
       octCanvas: document.getElementById("octCanvas"),
+      measurementCanvas: document.getElementById("measurementCanvas"),
       projectionImage: document.getElementById("projectionImage"),
       fundusImage: document.getElementById("fundusImage"),
       fundusEmptyState: document.getElementById("fundusEmptyState"),
@@ -609,6 +688,7 @@
     };
 
     const ctx = elements.octCanvas.getContext("2d");
+    const measurementCtx = elements.measurementCanvas.getContext("2d");
     const fundusCtx = elements.fundusCanvas.getContext("2d");
 
     const VENDOR_MODE_CONFIG = {
@@ -645,8 +725,8 @@
     };
 
     const VENDOR_MODE_VALUES = Object.keys(VENDOR_MODE_CONFIG);
-    const SHIWEI_UPLOAD_HINT = "视微模式不支持单文件上传，请直接输入数据目录、可唯一定位数据集的上级目录，或输入目录中的任一 DICOM 文件路径后点击“加载文件”。";
-    const TUPAI_UPLOAD_HINT = "Tupai 模式不支持单文件上传，请直接输入数据目录、可唯一定位数据集的上级目录，或输入 OCT.dcm / Fundus.dcm 的路径后点击“加载文件”。";
+    const SHIWEI_UPLOAD_HINT = "Shiwei mode does not support single-file upload. Enter a dataset directory, a uniquely resolvable parent directory, or any DICOM file path in the dataset, then click Load.";
+    const TUPAI_UPLOAD_HINT = "Tupai mode does not support single-file upload. Enter a dataset directory, a uniquely resolvable parent directory, or the path to OCT.dcm / Fundus.dcm, then click Load.";
 
     function vendorModeButtons() {
       return Array.from(elements.vendorModeGroup?.querySelectorAll("[data-vendor-mode]") || []);
@@ -663,7 +743,7 @@
     function getUploadHint(mode) {
       if (mode === "shiwei") return SHIWEI_UPLOAD_HINT;
       if (mode === "tupai") return TUPAI_UPLOAD_HINT;
-      return "当前模式不支持浏览器上传，请直接输入文件路径后点击“加载文件”。";
+      return "The current mode does not support browser upload. Enter a file path and click Load.";
     }
 
     function getUiState() {
@@ -705,7 +785,7 @@
       elements.recentSelect.innerHTML = "";
       const placeholder = document.createElement("option");
       placeholder.value = "";
-      placeholder.textContent = recentFiles.length ? "选择最近文件" : "暂无历史记录";
+      placeholder.textContent = recentFiles.length ? "Select recent file" : "No recent files";
       elements.recentSelect.appendChild(placeholder);
       recentFiles.forEach((filepath) => {
         const option = document.createElement("option");
@@ -805,7 +885,7 @@
         button.disabled = state.busy || !supported;
         button.title = supported
           ? ""
-          : (buttonMode === "box" ? "当前数据没有可用扫描框" : "当前数据没有可用定位线");
+          : (buttonMode === "box" ? "Current dataset does not include a scan box overlay." : "Current dataset does not include localizer lines.");
       });
     }
 
@@ -854,6 +934,211 @@
     function currentFundus() {
       if (!state.data || !state.data.fundusImages.length) return null;
       return state.data.fundusImages[state.fundusIndex] || null;
+    }
+
+    function getMeasurementSliceKey(
+      volumeIndex = state.volumeIndex,
+      sliceIndex = state.sliceIndex,
+      sourcePath = state.data?.sourcePath || "",
+    ) {
+      if (!sourcePath) return "";
+      return `${sourcePath}::${volumeIndex}::${sliceIndex}`;
+    }
+
+    function ensureMeasurementsForSlice(sliceKey = getMeasurementSliceKey()) {
+      if (!sliceKey) return [];
+      let measurements = state.measurementsBySlice.get(sliceKey);
+      if (!Array.isArray(measurements)) {
+        measurements = [];
+        state.measurementsBySlice.set(sliceKey, measurements);
+      }
+      return measurements;
+    }
+
+    function getCurrentMeasurements() {
+      if (!currentVolume()) return [];
+      return ensureMeasurementsForSlice();
+    }
+
+    function getMeasurementLabel(measurement, measurements = getCurrentMeasurements()) {
+      const index = measurements.findIndex((item) => item.id === measurement?.id);
+      return `M${index >= 0 ? index + 1 : "?"}`;
+    }
+
+    function getMeasurementScale(volume = currentVolume()) {
+      return volume?.measurementScale || {
+        isCalibrated: false,
+        xMmPerPixel: null,
+        yMmPerPixel: null,
+      };
+    }
+
+    function computeMeasurementStats(measurement, scale = getMeasurementScale()) {
+      const start = Array.isArray(measurement?.start) ? measurement.start : [0, 0];
+      const end = Array.isArray(measurement?.end) ? measurement.end : [0, 0];
+      const dxPx = Number(end[0]) - Number(start[0]);
+      const dyPx = Number(end[1]) - Number(start[1]);
+      const lengthPx = Math.hypot(dxPx, dyPx);
+      const isCalibrated = Boolean(
+        scale?.isCalibrated
+        && Number.isFinite(Number(scale?.xMmPerPixel))
+        && Number.isFinite(Number(scale?.yMmPerPixel)),
+      );
+      const dxMm = isCalibrated ? dxPx * Number(scale.xMmPerPixel) : null;
+      const dyMm = isCalibrated ? dyPx * Number(scale.yMmPerPixel) : null;
+      const lengthMm = isCalibrated ? Math.hypot(dxMm, dyMm) : null;
+      return {
+        dxPx,
+        dyPx,
+        lengthPx,
+        dxMm,
+        dyMm,
+        lengthMm,
+        isCalibrated,
+      };
+    }
+
+    function formatMeasurementNumber(value, digits = 2) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return "-";
+      return numeric.toFixed(digits).replace(/\.?0+$/, "");
+    }
+
+    function formatMeasurementPair(pxValue, mmValue) {
+      const parts = [`${formatMeasurementNumber(pxValue)} px`];
+      if (mmValue != null && Number.isFinite(Number(mmValue))) {
+        parts.push(`${formatMeasurementNumber(mmValue, 3)} mm`);
+      }
+      return parts.join(" / ");
+    }
+
+    function measurementAngleRadians(measurement) {
+      const stats = computeMeasurementStats(measurement);
+      return Math.atan2(stats.dyPx, stats.dxPx);
+    }
+
+    function computeSelectedMeasurementAngle(selectedMeasurements) {
+      if (!Array.isArray(selectedMeasurements) || selectedMeasurements.length !== 2) {
+        return null;
+      }
+      const [first, second] = selectedMeasurements;
+      let diff = Math.abs(measurementAngleRadians(first) - measurementAngleRadians(second));
+      while (diff >= Math.PI) {
+        diff -= Math.PI;
+      }
+      if (diff > (Math.PI / 2)) {
+        diff = Math.PI - diff;
+      }
+      return diff * (180 / Math.PI);
+    }
+
+    function getSelectedMeasurements(measurements = getCurrentMeasurements()) {
+      return measurements.filter((measurement) => state.selectedMeasurementIds.has(measurement.id));
+    }
+
+    function resetMeasurementTransientState() {
+      state.measurementDraftStart = null;
+      state.measurementHoverPoint = null;
+      state.measurementHoverHandle = null;
+      state.measurementDrag = null;
+      state.measurementSuppressClick = false;
+      state.selectedMeasurementIds = new Set();
+    }
+
+    function resetMeasurementState() {
+      state.measurementsBySlice = new Map();
+      state.nextMeasurementId = 1;
+      resetMeasurementTransientState();
+    }
+
+    function buildMeasurementSummaryState() {
+      const volume = currentVolume();
+      if (!volume) {
+        return {
+          text: "Load a B-scan to use the measurement tool.",
+          active: false,
+          warning: false,
+        };
+      }
+
+      if (!state.measurementMode) {
+        return {
+          text: "Enable measurement mode, then click two points on the B-scan to create a line.",
+          active: false,
+          warning: false,
+        };
+      }
+
+      const measurements = getCurrentMeasurements();
+      const selectedMeasurements = getSelectedMeasurements(measurements);
+      if (state.measurementDraftStart) {
+        return {
+          text: "First point selected. Click the second point to finish the measurement, or press Esc to cancel.",
+          active: true,
+          warning: true,
+        };
+      }
+
+      if (selectedMeasurements.length === 1) {
+        const measurement = selectedMeasurements[0];
+        const stats = computeMeasurementStats(measurement);
+        return {
+          text: `Selected ${getMeasurementLabel(measurement, measurements)} | ?x ${formatMeasurementPair(Math.abs(stats.dxPx), stats.dxMm == null ? null : Math.abs(stats.dxMm))} ? ?y ${formatMeasurementPair(Math.abs(stats.dyPx), stats.dyMm == null ? null : Math.abs(stats.dyMm))} ? Length ${formatMeasurementPair(stats.lengthPx, stats.lengthMm)}` ,
+          active: true,
+          warning: false,
+        };
+      }
+
+      if (selectedMeasurements.length === 2) {
+        const first = selectedMeasurements[0];
+        const second = selectedMeasurements[1];
+        const firstStats = computeMeasurementStats(first);
+        const secondStats = computeMeasurementStats(second);
+        const angleDegrees = computeSelectedMeasurementAngle(selectedMeasurements);
+        return {
+          text: `Selected 2 lines | ${getMeasurementLabel(first, measurements)} Length ${formatMeasurementPair(firstStats.lengthPx, firstStats.lengthMm)} ? ${getMeasurementLabel(second, measurements)} Length ${formatMeasurementPair(secondStats.lengthPx, secondStats.lengthMm)} ? Angle ${formatMeasurementNumber(angleDegrees, 1)}?`,
+          active: true,
+          warning: false,
+        };
+      }
+
+      if (selectedMeasurements.length > 2) {
+        return {
+          text: `Selected ${selectedMeasurements.length} measurements. Angle is shown only when exactly 2 lines are selected.`,
+          active: true,
+          warning: false,
+        };
+      }
+
+      if (measurements.length > 0) {
+        return {
+          text: `This slice has ${measurements.length} measurements. Click a line to select it, or Ctrl/Cmd+click to multi-select.`,
+          active: true,
+          warning: false,
+        };
+      }
+
+      return {
+        text: "This slice has no measurements yet. Click two points to create the first one.",
+        active: true,
+        warning: false,
+      };
+    }
+
+    function renderMeasurementControls() {
+      const volume = currentVolume();
+      const measurements = volume ? getCurrentMeasurements() : [];
+      const selectedMeasurements = volume ? getSelectedMeasurements(measurements) : [];
+      elements.measurementModeButton.disabled = !volume;
+      elements.measurementDeleteButton.disabled = !volume || selectedMeasurements.length === 0;
+      elements.measurementClearButton.disabled = !volume || measurements.length === 0;
+      elements.measurementModeButton.textContent = state.measurementMode ? "Measurement On" : "Measurement Off";
+      elements.measurementModeButton.classList.toggle("active", Boolean(volume && state.measurementMode));
+      const summary = buildMeasurementSummaryState();
+      elements.measurementReadout.textContent = summary.text;
+      elements.measurementReadout.classList.toggle("active", Boolean(summary.active));
+      elements.measurementReadout.classList.toggle("warning", Boolean(summary.warning));
+      elements.measurementCanvas.style.cursor = getMeasurementCanvasCursor();
     }
 
     function getContourStateKey(volume = currentVolume()) {
@@ -915,7 +1200,7 @@
       const visibleNames = getVisibleContourNames(volume);
 
       if (!contourNames.length) {
-        elements.contourNames.textContent = "无";
+        elements.contourNames.textContent = "None";
         elements.contourLayerList.innerHTML = `<div class="contour-layer-empty">当前切片无可用轮廓图层</div>`;
         return;
       }
@@ -976,9 +1261,10 @@
       if (elements.zoomResetButton) {
         elements.zoomResetButton.textContent = `${Math.round(state.bscanZoom * 100)}%`;
       }
-      elements.overlayButton.textContent = state.overlay ? "轮廓开" : "轮廓关";
-      elements.infoButton.textContent = state.showInfo ? "提示开" : "提示关";
+      elements.overlayButton.textContent = state.overlay ? "Contours On" : "Contours Off";
+      elements.infoButton.textContent = state.showInfo ? "Hints On" : "Hints Off";
       renderContourLayerControls();
+      renderMeasurementControls();
     }
 
     function renderSelectors() {
@@ -1004,9 +1290,9 @@
       elements.bscanViewHint.style.display = hintDisplay;
       if (!volume) {
         elements.fundusViewTitle.textContent = "定位图 / Fundus";
-        elements.fundusViewHint.textContent = "左侧显示定位图，点击定位线可跳转到对应切片。";
+        elements.fundusViewHint.textContent = "The left panel shows the fundus/localizer. Click a scan line to jump to the matching slice.";
         elements.bscanViewTitle.textContent = "当前 B-Scan";
-        elements.bscanViewHint.textContent = "右侧显示与左侧定位线匹配的当前切片。";
+        elements.bscanViewHint.textContent = "The right panel shows the current B-scan matched to the selected localizer line.";
         return;
       }
 
@@ -1021,15 +1307,15 @@
       if (volume.overlayWarning) {
         elements.fundusViewHint.textContent = volume.overlayWarning;
       } else if (displayMode === "box") {
-        elements.fundusViewHint.textContent = `当前显示扫描范围方框，红线对应 B-scan 第 ${sliceNumber} / ${volume.sliceCount} 张。`;
+        elements.fundusViewHint.textContent = `Showing the scan box. The red line corresponds to B-scan ${sliceNumber} / ${volume.sliceCount}.`;
       } else if (displayMode === "radial") {
-        elements.fundusViewHint.textContent = `当前显示放射状扫描定位，第 ${sliceNumber} / ${volume.sliceCount} 张。`;
+        elements.fundusViewHint.textContent = `Showing radial localizer lines. Current slice ${sliceNumber} / ${volume.sliceCount}.`;
       } else if (displayMode === "single-line") {
-        elements.fundusViewHint.textContent = `当前为${directionLabel}扫描线，对应当前 B-scan。`;
+        elements.fundusViewHint.textContent = `Showing the ${directionLabel} scan line that corresponds to the current B-scan.`;
       } else if (volume.overlayMode === "e2e-metadata") {
-        elements.fundusViewHint.textContent = `定位线已与 B-scan 元数据匹配，当前为第 ${sliceNumber} / ${volume.sliceCount} 张。`;
+        elements.fundusViewHint.textContent = `B-scan metadata has been matched to the localizer. Current slice ${sliceNumber} / ${volume.sliceCount}.`;
       } else {
-        elements.fundusViewHint.textContent = `当前定位线：第 ${sliceNumber} / ${Math.max(segmentCount, volume.sliceCount)} 张，点击左图可快速切换。`;
+        elements.fundusViewHint.textContent = `Current localizer line: ${sliceNumber} / ${Math.max(segmentCount, volume.sliceCount)}. Click the fundus view to jump quickly.`;
       }
 
       elements.bscanViewTitle.textContent = volume.label || "当前 B-Scan";
@@ -1109,7 +1395,7 @@
       elements.pathValue.textContent = loaded ? state.data.sourcePath : "-";
       elements.volumeCountValue.textContent = String(state.data?.volumes?.length || 0);
       elements.fundusCountValue.textContent = String(state.data?.fundusImages?.length || 0);
-      elements.volumeBadge.textContent = volume ? `${volume.width} × ${volume.height} · ${volume.sliceCount} slices` : "未加载";
+      elements.volumeBadge.textContent = volume ? `${volume.width} ? ${volume.height} ? ${volume.sliceCount} slices` : "Not loaded";
       elements.sliceSlider.disabled = !volume;
       elements.prevButton.disabled = !volume;
       elements.nextButton.disabled = !volume;
@@ -1392,7 +1678,7 @@
       elements.pathValue.textContent = loaded ? state.data.sourcePath : "-";
       elements.volumeCountValue.textContent = String(state.data?.volumes?.length || 0);
       elements.fundusCountValue.textContent = String(state.data?.fundusImages?.length || 0);
-      elements.volumeBadge.textContent = volume ? `${volume.width} × ${volume.height} · ${volume.sliceCount} slices` : "未加载";
+      elements.volumeBadge.textContent = volume ? `${volume.width} ? ${volume.height} ? ${volume.sliceCount} slices` : "Not loaded";
       elements.sliceSlider.disabled = !volume;
       elements.prevButton.disabled = !volume;
       elements.nextButton.disabled = !volume;
@@ -1444,6 +1730,10 @@
         logicalHeight: crop.height * heightScale,
         zoomFactor: state.bscanZoom,
       });
+      elements.measurementCanvas.style.width = elements.octCanvas.style.width;
+      elements.measurementCanvas.style.height = elements.octCanvas.style.height;
+      elements.bscanCanvasStack.style.width = elements.octCanvas.style.width;
+      elements.bscanCanvasStack.style.height = elements.octCanvas.style.height;
       fitCanvasToStage({
         canvas: elements.fundusCanvas,
         stage: elements.fundusStage,
@@ -1654,11 +1944,17 @@
       fundusCtx.restore();
     }
 
-    function pointToCanvas(event, canvas) {
+    function pointToCanvas(event, canvas, { clamp = false } = {}) {
       const rect = canvas.getBoundingClientRect();
       if (!rect.width || !rect.height) return null;
       const x = ((event.clientX - rect.left) / rect.width) * canvas.width;
       const y = ((event.clientY - rect.top) / rect.height) * canvas.height;
+      if (clamp) {
+        return [
+          Math.max(0, Math.min(canvas.width, x)),
+          Math.max(0, Math.min(canvas.height, y)),
+        ];
+      }
       if (x < 0 || y < 0 || x > canvas.width || y > canvas.height) {
         return null;
       }
@@ -1690,6 +1986,382 @@
       return Math.hypot(px - nearestX, py - nearestY);
     }
 
+    function getMeasurementHitTolerance() {
+      const rect = elements.measurementCanvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) {
+        return 10;
+      }
+      const scaleX = elements.measurementCanvas.width / rect.width;
+      const scaleY = elements.measurementCanvas.height / rect.height;
+      return 10 * Math.max(scaleX, scaleY);
+    }
+
+    function findMeasurementAtPoint(point, measurements = getCurrentMeasurements()) {
+      const tolerance = getMeasurementHitTolerance();
+      let matched = null;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      measurements.forEach((measurement) => {
+        const distance = distanceToSegment(point, measurement);
+        if (distance <= tolerance && distance < bestDistance) {
+          matched = measurement;
+          bestDistance = distance;
+        }
+      });
+      return matched;
+    }
+
+    function distanceToPoint(first, second) {
+      return Math.hypot(Number(first[0]) - Number(second[0]), Number(first[1]) - Number(second[1]));
+    }
+
+    function getMeasurementHandleHitTolerance() {
+      const rect = elements.measurementCanvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) {
+        return 12;
+      }
+      const scaleX = elements.measurementCanvas.width / rect.width;
+      const scaleY = elements.measurementCanvas.height / rect.height;
+      return 12 * Math.max(scaleX, scaleY);
+    }
+
+    function getMeasurementHandleKey(measurementId, endpointKey) {
+      return `${measurementId}:${endpointKey}`;
+    }
+
+    function findMeasurementHandleAtPoint(point, measurements = getCurrentMeasurements()) {
+      const tolerance = getMeasurementHandleHitTolerance();
+      let matched = null;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      measurements.forEach((measurement) => {
+        ["start", "end"].forEach((endpointKey) => {
+          const endpoint = measurement?.[endpointKey];
+          if (!Array.isArray(endpoint) || endpoint.length < 2) {
+            return;
+          }
+          const distance = distanceToPoint(point, endpoint);
+          if (distance <= tolerance && distance < bestDistance) {
+            matched = {
+              measurement,
+              endpointKey,
+              handleKey: getMeasurementHandleKey(measurement.id, endpointKey),
+            };
+            bestDistance = distance;
+          }
+        });
+      });
+      return matched;
+    }
+
+    function findMeasurementById(measurementId, measurements = getCurrentMeasurements()) {
+      return measurements.find((measurement) => measurement.id === measurementId) || null;
+    }
+
+    function clampCanvasPoint(point, canvas = elements.measurementCanvas) {
+      return [
+        Math.max(0, Math.min(canvas.width, Number(point[0]))),
+        Math.max(0, Math.min(canvas.height, Number(point[1]))),
+      ];
+    }
+
+    function getMeasurementCanvasCursor() {
+      const volume = currentVolume();
+      if (!volume || !state.measurementMode) {
+        return "default";
+      }
+      if (state.measurementDrag) {
+        return "grabbing";
+      }
+      if (state.measurementHoverHandle) {
+        return "grab";
+      }
+      return "crosshair";
+    }
+
+    function drawMeasurementLabel(measurement, label, isSelected) {
+      const start = measurement.start;
+      const end = measurement.end;
+      const labelX = (Number(start[0]) + Number(end[0])) / 2;
+      const labelY = (Number(start[1]) + Number(end[1])) / 2;
+      measurementCtx.save();
+      measurementCtx.font = `${Math.max(12, Math.round(elements.measurementCanvas.height / 32))}px "Segoe UI", sans-serif`;
+      measurementCtx.fillStyle = isSelected ? "#f8fafc" : "#e2e8f0";
+      measurementCtx.strokeStyle = "rgba(2, 6, 23, 0.82)";
+      measurementCtx.lineWidth = 4;
+      measurementCtx.strokeText(label, labelX + 10, labelY - 10);
+      measurementCtx.fillText(label, labelX + 10, labelY - 10);
+      measurementCtx.restore();
+    }
+
+    function drawMeasurementOverlay() {
+      measurementCtx.clearRect(0, 0, elements.measurementCanvas.width, elements.measurementCanvas.height);
+      const volume = currentVolume();
+      if (!volume) {
+        return;
+      }
+
+      const measurements = getCurrentMeasurements();
+      const activeHandleKey = state.measurementDrag
+        ? getMeasurementHandleKey(state.measurementDrag.measurementId, state.measurementDrag.endpointKey)
+        : state.measurementHoverHandle;
+      measurements.forEach((measurement) => {
+        const isSelected = state.selectedMeasurementIds.has(measurement.id);
+        measurementCtx.save();
+        measurementCtx.lineWidth = isSelected ? 3 : 2;
+        measurementCtx.strokeStyle = isSelected ? "#f97316" : "#38bdf8";
+        measurementCtx.fillStyle = isSelected ? "#fde68a" : "#bfdbfe";
+        measurementCtx.beginPath();
+        measurementCtx.moveTo(Number(measurement.start[0]), Number(measurement.start[1]));
+        measurementCtx.lineTo(Number(measurement.end[0]), Number(measurement.end[1]));
+        measurementCtx.stroke();
+        [["start", measurement.start], ["end", measurement.end]].forEach(([endpointKey, point]) => {
+          const isActiveHandle = activeHandleKey === getMeasurementHandleKey(measurement.id, endpointKey);
+          measurementCtx.beginPath();
+          measurementCtx.arc(
+            Number(point[0]),
+            Number(point[1]),
+            isActiveHandle ? 6 : (isSelected ? 4.5 : 3.5),
+            0,
+            Math.PI * 2,
+          );
+          measurementCtx.fill();
+        });
+        measurementCtx.restore();
+        drawMeasurementLabel(measurement, getMeasurementLabel(measurement, measurements), isSelected);
+      });
+
+      if (state.measurementMode && state.measurementDraftStart && state.measurementHoverPoint) {
+        measurementCtx.save();
+        measurementCtx.setLineDash([8, 6]);
+        measurementCtx.lineWidth = 2;
+        measurementCtx.strokeStyle = "#facc15";
+        measurementCtx.fillStyle = "#fde68a";
+        measurementCtx.beginPath();
+        measurementCtx.moveTo(Number(state.measurementDraftStart[0]), Number(state.measurementDraftStart[1]));
+        measurementCtx.lineTo(Number(state.measurementHoverPoint[0]), Number(state.measurementHoverPoint[1]));
+        measurementCtx.stroke();
+        measurementCtx.setLineDash([]);
+        measurementCtx.beginPath();
+        measurementCtx.arc(Number(state.measurementDraftStart[0]), Number(state.measurementDraftStart[1]), 4.5, 0, Math.PI * 2);
+        measurementCtx.fill();
+        measurementCtx.restore();
+      }
+    }
+
+    function setMeasurementMode(enabled) {
+      state.measurementMode = Boolean(enabled);
+      if (!state.measurementMode) {
+        resetMeasurementTransientState();
+      }
+      updateLabels();
+      drawMeasurementOverlay();
+    }
+
+    function toggleMeasurementSelection(measurementId, appendSelection = false) {
+      if (!appendSelection) {
+        state.selectedMeasurementIds = new Set([measurementId]);
+        return;
+      }
+      const next = new Set(state.selectedMeasurementIds);
+      if (next.has(measurementId)) {
+        next.delete(measurementId);
+      } else {
+        next.add(measurementId);
+      }
+      state.selectedMeasurementIds = next;
+    }
+
+    function createMeasurement(start, end) {
+      const measurement = {
+        id: state.nextMeasurementId,
+        start: [Number(start[0]), Number(start[1])],
+        end: [Number(end[0]), Number(end[1])],
+      };
+      state.nextMeasurementId += 1;
+      ensureMeasurementsForSlice().push(measurement);
+      state.selectedMeasurementIds = new Set([measurement.id]);
+      state.measurementDraftStart = null;
+      state.measurementHoverPoint = null;
+      updateLabels();
+      drawMeasurementOverlay();
+    }
+
+    function updateMeasurementDrag(point) {
+      if (!state.measurementDrag || !point) {
+        return;
+      }
+      const measurements = getCurrentMeasurements();
+      const measurement = findMeasurementById(state.measurementDrag.measurementId, measurements);
+      if (!measurement) {
+        state.measurementDrag = null;
+        state.measurementHoverHandle = null;
+        renderMeasurementControls();
+        drawMeasurementOverlay();
+        return;
+      }
+      const clampedPoint = clampCanvasPoint(point);
+      measurement[state.measurementDrag.endpointKey] = clampedPoint;
+      state.measurementHoverPoint = clampedPoint;
+      state.measurementHoverHandle = getMeasurementHandleKey(
+        state.measurementDrag.measurementId,
+        state.measurementDrag.endpointKey,
+      );
+      renderMeasurementControls();
+      drawMeasurementOverlay();
+    }
+
+    function endMeasurementDrag() {
+      if (!state.measurementDrag) {
+        return;
+      }
+      state.measurementDrag = null;
+      state.measurementSuppressClick = true;
+      renderMeasurementControls();
+      drawMeasurementOverlay();
+    }
+
+    function handleMeasurementCanvasMouseDown(event) {
+      const volume = currentVolume();
+      if (!volume || !state.measurementMode) {
+        return;
+      }
+      const point = pointToCanvas(event, elements.measurementCanvas);
+      if (!point) {
+        return;
+      }
+      const handle = findMeasurementHandleAtPoint(point);
+      state.measurementHoverPoint = point;
+      state.measurementHoverHandle = handle?.handleKey || null;
+      renderMeasurementControls();
+      if (!handle) {
+        return;
+      }
+      event.preventDefault();
+      state.measurementDraftStart = null;
+      state.measurementDrag = {
+        measurementId: handle.measurement.id,
+        endpointKey: handle.endpointKey,
+      };
+      state.measurementSuppressClick = false;
+      state.selectedMeasurementIds = new Set([handle.measurement.id]);
+      updateMeasurementDrag(point);
+    }
+
+    function handleMeasurementCanvasClick(event) {
+      const volume = currentVolume();
+      if (!volume || !state.measurementMode) {
+        return;
+      }
+      if (state.measurementSuppressClick) {
+        state.measurementSuppressClick = false;
+        return;
+      }
+      if (state.measurementDrag) {
+        return;
+      }
+      const point = pointToCanvas(event, elements.measurementCanvas);
+      if (!point) {
+        return;
+      }
+
+      const measurements = getCurrentMeasurements();
+      const appendSelection = Boolean(event.ctrlKey || event.metaKey);
+      if (!state.measurementDraftStart) {
+        const matchedMeasurement = findMeasurementAtPoint(point, measurements);
+        if (matchedMeasurement) {
+          toggleMeasurementSelection(matchedMeasurement.id, appendSelection);
+          state.measurementHoverPoint = point;
+          updateLabels();
+          drawMeasurementOverlay();
+          return;
+        }
+      }
+
+      if (!state.measurementDraftStart) {
+        state.measurementDraftStart = point;
+        state.measurementHoverPoint = point;
+        state.selectedMeasurementIds = new Set();
+        updateLabels();
+        drawMeasurementOverlay();
+        return;
+      }
+
+      createMeasurement(state.measurementDraftStart, point);
+    }
+
+    function handleMeasurementCanvasMouseMove(event) {
+      if (!state.measurementMode) {
+        return;
+      }
+      if (state.measurementDrag) {
+        return;
+      }
+      const point = pointToCanvas(event, elements.measurementCanvas);
+      state.measurementHoverPoint = point;
+      const nextHandle = point ? findMeasurementHandleAtPoint(point) : null;
+      const nextHandleKey = nextHandle?.handleKey || null;
+      const hoverHandleChanged = nextHandleKey !== state.measurementHoverHandle;
+      state.measurementHoverHandle = nextHandleKey;
+      renderMeasurementControls();
+      if (state.measurementDraftStart || hoverHandleChanged) {
+        drawMeasurementOverlay();
+      }
+    }
+
+    function handleMeasurementCanvasMouseLeave() {
+      if (!state.measurementMode) {
+        return;
+      }
+      if (state.measurementDrag) {
+        return;
+      }
+      state.measurementHoverPoint = null;
+      state.measurementHoverHandle = null;
+      renderMeasurementControls();
+      if (state.measurementDraftStart) {
+        drawMeasurementOverlay();
+      }
+    }
+
+    function handleMeasurementWindowMouseMove(event) {
+      if (!state.measurementDrag) {
+        return;
+      }
+      const point = pointToCanvas(event, elements.measurementCanvas, { clamp: true });
+      updateMeasurementDrag(point);
+    }
+
+    function handleMeasurementWindowMouseUp() {
+      endMeasurementDrag();
+    }
+
+    function deleteSelectedMeasurements() {
+      const sliceKey = getMeasurementSliceKey();
+      if (!sliceKey || !state.selectedMeasurementIds.size) {
+        return;
+      }
+      const measurements = ensureMeasurementsForSlice(sliceKey);
+      const remaining = measurements.filter((measurement) => !state.selectedMeasurementIds.has(measurement.id));
+      if (remaining.length) {
+        state.measurementsBySlice.set(sliceKey, remaining);
+      } else {
+        state.measurementsBySlice.delete(sliceKey);
+      }
+      resetMeasurementTransientState();
+      updateLabels();
+      drawMeasurementOverlay();
+    }
+
+    function clearCurrentSliceMeasurements() {
+      const sliceKey = getMeasurementSliceKey();
+      if (!sliceKey) {
+        return;
+      }
+      state.measurementsBySlice.delete(sliceKey);
+      resetMeasurementTransientState();
+      updateLabels();
+      drawMeasurementOverlay();
+    }
+
     function selectSliceFromFundus(event) {
       const volume = currentVolume();
       if (!volume) return;
@@ -1713,6 +2385,7 @@
         const nextIndex = Math.max(0, Math.min(sliceCount - 1, Math.round(ratio * (sliceCount - 1))));
         if (nextIndex < 0 || nextIndex === state.sliceIndex) return;
         state.sliceIndex = nextIndex;
+        resetMeasurementTransientState();
         elements.sliceSlider.value = String(state.sliceIndex);
         updateLabels();
         updateViewInfo();
@@ -1732,6 +2405,7 @@
 
       if (bestIndex < 0 || bestIndex === state.sliceIndex) return;
       state.sliceIndex = bestIndex;
+      resetMeasurementTransientState();
       elements.sliceSlider.value = String(state.sliceIndex);
       updateLabels();
       updateViewInfo();
@@ -1799,6 +2473,7 @@
       if (!volume) {
         state.bscanCrop = null;
         ctx.clearRect(0, 0, elements.octCanvas.width, elements.octCanvas.height);
+        measurementCtx.clearRect(0, 0, elements.measurementCanvas.width, elements.measurementCanvas.height);
         return;
       }
 
@@ -1819,9 +2494,19 @@
           elements.octCanvas.width !== state.canvasNaturalWidth
           || elements.octCanvas.height !== state.canvasNaturalHeight
         );
+        const measurementSizeChanged = (
+          elements.measurementCanvas.width !== state.canvasNaturalWidth
+          || elements.measurementCanvas.height !== state.canvasNaturalHeight
+        );
         if (bscanSizeChanged) {
           elements.octCanvas.width = state.canvasNaturalWidth;
           elements.octCanvas.height = state.canvasNaturalHeight;
+        }
+        if (measurementSizeChanged) {
+          elements.measurementCanvas.width = state.canvasNaturalWidth;
+          elements.measurementCanvas.height = state.canvasNaturalHeight;
+        }
+        if (bscanSizeChanged || measurementSizeChanged) {
           fitCanvasDisplays();
         }
         ctx.clearRect(0, 0, elements.octCanvas.width, elements.octCanvas.height);
@@ -1844,6 +2529,7 @@
           console.warn(error);
         }
       }
+      drawMeasurementOverlay();
     }
 
     async function drawViewer() {
@@ -1863,8 +2549,15 @@
     }
 
     async function refreshState() {
+      const previousSourcePath = state.data?.sourcePath || "";
       state.data = await fetchJson("/api/state");
+      const nextSourcePath = state.data?.sourcePath || "";
       invalidateViewerCaches();
+      if (previousSourcePath !== nextSourcePath) {
+        resetMeasurementState();
+      } else {
+        resetMeasurementTransientState();
+      }
       if (state.data.loaded) {
         const maxVolume = Math.max(0, state.data.volumes.length - 1);
         const maxFundus = Math.max(0, state.data.fundusImages.length - 1);
@@ -1877,6 +2570,7 @@
         state.volumeIndex = 0;
         state.fundusIndex = 0;
         state.sliceIndex = 0;
+        resetMeasurementState();
       }
       renderState();
       scheduleDraw();
@@ -1888,6 +2582,7 @@
       state.fundusIndex = 0;
       state.sliceIndex = 0;
       invalidateViewerCaches();
+      resetMeasurementState();
       applyMatchedFundus();
       resetPlayback();
 
@@ -1911,7 +2606,7 @@
     async function loadPath() {
       const filepath = elements.pathInput.value.trim();
       if (!filepath) {
-        setStatus("请先输入一个 OCT 文件路径。", true);
+        setStatus("Please enter an OCT file path first.", true);
         return;
       }
       setBusy(true, `正在以“${getVendorModeLabel(state.vendorMode)}”模式读取数据，请稍候...`);
@@ -1959,6 +2654,7 @@
       if (!volume) return;
       const sliceCount = volume.sliceCount;
       state.sliceIndex = (state.sliceIndex + delta + sliceCount) % sliceCount;
+      resetMeasurementTransientState();
       elements.sliceSlider.value = String(state.sliceIndex);
       updateLabels();
       if (shouldSchedule) {
@@ -2043,7 +2739,7 @@
       try {
         const payload = await fetchJson(`/api/pick-file?vendor=${encodeURIComponent(state.vendorMode)}`);
         if (payload?.cancelled) {
-          setStatus(usesDirectoryPicker(state.vendorMode) ? "已取消选择目录。" : "已取消选择文件。");
+          setStatus(usesDirectoryPicker(state.vendorMode) ? "Directory selection cancelled." : "File selection cancelled.");
           return;
         }
         applyLoadedPayload(payload);
@@ -2080,17 +2776,23 @@
     vendorModeButtons().forEach((button) => {
       button.addEventListener("click", () => {
         setVendorMode(button.dataset.vendorMode || "auto");
-        setStatus(`当前加载模式：${getVendorModeLabel(state.vendorMode)}。`);
+        setStatus(`Current load mode: ${getVendorModeLabel(state.vendorMode)}.`);
       });
     });
     elements.refreshButton.addEventListener("click", () => {
       setBusy(true, "正在刷新状态...");
       refreshState()
-        .then(() => setStatus("状态已刷新。"))
+        .then(() => setStatus("State refreshed."))
         .catch((error) => setStatus(error.message, true))
         .finally(() => setBusy(false));
     });
     elements.resetViewButton.addEventListener("click", resetViewControls);
+    elements.measurementModeButton.addEventListener("click", () => {
+      if (!currentVolume()) return;
+      setMeasurementMode(!state.measurementMode);
+    });
+    elements.measurementDeleteButton.addEventListener("click", deleteSelectedMeasurements);
+    elements.measurementClearButton.addEventListener("click", clearCurrentSliceMeasurements);
     elements.recentSelect.addEventListener("change", () => {
       if (!elements.recentSelect.value) return;
       elements.pathInput.value = elements.recentSelect.value;
@@ -2101,6 +2803,7 @@
       state.fundusIndex = 0;
       state.sliceIndex = 0;
       invalidateViewerCaches();
+      resetMeasurementTransientState();
       applyMatchedFundus();
       renderState();
       scheduleDraw();
@@ -2111,6 +2814,7 @@
     });
     elements.sliceSlider.addEventListener("input", () => {
       state.sliceIndex = Number(elements.sliceSlider.value);
+      resetMeasurementTransientState();
       updateLabels();
       scheduleDraw();
     });
@@ -2174,6 +2878,12 @@
       if (!currentVolume()) return;
       setBscanZoom(1);
     });
+    elements.measurementCanvas.addEventListener("mousedown", handleMeasurementCanvasMouseDown);
+    elements.measurementCanvas.addEventListener("click", handleMeasurementCanvasClick);
+    elements.measurementCanvas.addEventListener("mousemove", handleMeasurementCanvasMouseMove);
+    elements.measurementCanvas.addEventListener("mouseleave", handleMeasurementCanvasMouseLeave);
+    window.addEventListener("mousemove", handleMeasurementWindowMouseMove);
+    window.addEventListener("mouseup", handleMeasurementWindowMouseUp);
     elements.fundusStage.addEventListener("click", selectSliceFromFundus);
     elements.fundusStage.addEventListener("wheel", (event) => {
       if (!currentVolume()) return;
@@ -2187,6 +2897,13 @@
         event.preventDefault();
         togglePlay();
       }
+      if (event.key === "Escape" && state.measurementMode && state.measurementDraftStart) {
+        event.preventDefault();
+        state.measurementDraftStart = null;
+        state.measurementHoverPoint = null;
+        updateLabels();
+        drawMeasurementOverlay();
+      }
     });
     window.addEventListener("resize", fitCanvasDisplay);
 
@@ -2199,7 +2916,7 @@
           saveRecentFile(elements.pathInput.value.trim());
           setStatus(`已加载：${state.data.sourcePath}`);
         } else {
-          setStatus("等待加载 OCT 文件。");
+          setStatus("Waiting for an OCT file.");
         }
       })
       .catch((error) => setStatus(error.message, true));

@@ -43,6 +43,11 @@ from topcon_fa_qt import (
     DEFAULT_INPUT_DIR as TOPCON_DEFAULT_INPUT_DIR,
     load_topcon_fa_dataset,
 )
+from hdb_fa_qt import (
+    DEFAULT_INPUT_PATH as HDB_DEFAULT_INPUT_PATH,
+    laterality_to_chinese as hdb_laterality_display_text,
+    load_heidelberg_fa_dataset,
+)
 from zeiss_fa_qt import (
     DEFAULT_INPUT_PATH as ZEISS_DEFAULT_INPUT_PATH,
     DICOM_SUFFIXES,
@@ -61,7 +66,9 @@ from zeiss_fa_qt import (
 VENDOR_AUTO = "auto"
 VENDOR_TOPCON = "topcon"
 VENDOR_ZEISS = "zeiss"
+VENDOR_HDB = "hdb"
 TOPCON_IMAGE_GLOB = "IM*.JPG"
+HDB_E2E_GLOB = "*.E2E"
 
 
 @dataclass
@@ -123,21 +130,23 @@ def default_input_path() -> Path | None:
         return TOPCON_DEFAULT_INPUT_DIR
     if ZEISS_DEFAULT_INPUT_PATH.exists():
         return ZEISS_DEFAULT_INPUT_PATH
+    if HDB_DEFAULT_INPUT_PATH.exists():
+        return HDB_DEFAULT_INPUT_PATH
     return None
 
 
 def parse_args() -> argparse.Namespace:
     default_path = default_input_path()
-    parser = argparse.ArgumentParser(description="Unified Topcon / Zeiss FA Qt viewer.")
+    parser = argparse.ArgumentParser(description="Unified Topcon / Zeiss / HDB FA Qt viewer.")
     parser.add_argument(
         "input_path",
         nargs="?",
         default=str(default_path) if default_path else None,
-        help="Topcon FA folder, Zeiss FA folder, or a Zeiss DICOM file.",
+        help="Topcon FA folder, Zeiss FA folder/DICOM file, or HDB/Heidelberg E2E file.",
     )
     parser.add_argument(
         "--vendor",
-        choices=(VENDOR_AUTO, VENDOR_TOPCON, VENDOR_ZEISS),
+        choices=(VENDOR_AUTO, VENDOR_TOPCON, VENDOR_ZEISS, VENDOR_HDB),
         default=VENDOR_AUTO,
         help="Force the dataset vendor instead of auto-detecting it.",
     )
@@ -195,6 +204,8 @@ def detect_vendor(path: Path) -> str | None:
             return VENDOR_TOPCON
         if path.match(TOPCON_IMAGE_GLOB) and (container / "DATAFILE").exists():
             return VENDOR_TOPCON
+        if path.suffix.lower() == ".e2e":
+            return VENDOR_HDB
         if path.suffix.lower() in DICOM_SUFFIXES or path.name.upper() == "DICOMDIR":
             return VENDOR_ZEISS
 
@@ -203,9 +214,13 @@ def detect_vendor(path: Path) -> str | None:
             return VENDOR_TOPCON
         if any(container.glob(TOPCON_IMAGE_GLOB)):
             return VENDOR_TOPCON
+        if any(container.glob(HDB_E2E_GLOB)) or any(container.glob("*.e2e")):
+            return VENDOR_HDB
 
         search_root = container / "DataFiles" if (container / "DataFiles").is_dir() else container
         for candidate in search_root.rglob("*"):
+            if candidate.is_file() and candidate.suffix.lower() == ".e2e":
+                return VENDOR_HDB
             if candidate.is_file() and (
                 candidate.suffix.lower() in DICOM_SUFFIXES or candidate.name.upper() == "DICOMDIR"
             ):
@@ -293,6 +308,123 @@ def load_topcon_dataset(input_path: Path) -> UnifiedFADataset:
         vendor=VENDOR_TOPCON,
         vendor_label="Topcon",
         input_path=input_dir.resolve(),
+        study_info=normalized_study,
+        frames=unified_frames,
+    )
+
+
+def _compute_hdb_elapsed_seconds(
+    frame,
+    *,
+    first_datetime: datetime | None,
+    first_time_of_day_ms: int | None,
+    first_raw_elapsed_ms: int | None,
+    first_raw_elapsed_ms_alt: int | None,
+) -> float | None:
+    if frame.acquisition_datetime_local is not None and first_datetime is not None:
+        return (frame.acquisition_datetime_local - first_datetime).total_seconds()
+    if frame.time_of_day_ms is not None and first_time_of_day_ms is not None:
+        return (frame.time_of_day_ms - first_time_of_day_ms) / 1000.0
+    if frame.raw_elapsed_ms is not None and first_raw_elapsed_ms is not None:
+        return (frame.raw_elapsed_ms - first_raw_elapsed_ms) / 1000.0
+    if frame.raw_elapsed_ms_alt is not None and first_raw_elapsed_ms_alt is not None:
+        return (frame.raw_elapsed_ms_alt - first_raw_elapsed_ms_alt) / 1000.0
+    return None
+
+
+def load_hdb_dataset(input_path: Path) -> UnifiedFADataset:
+    input_file, study_info, frames = load_heidelberg_fa_dataset(str(input_path))
+    if input_file is None or not input_file.exists():
+        raise FileNotFoundError(input_path)
+    if not frames:
+        raise RuntimeError(f"No HDB / Heidelberg FA frames found in {input_file}")
+
+    first_datetime = min(
+        (frame.acquisition_datetime_local for frame in frames if frame.acquisition_datetime_local is not None),
+        default=None,
+    )
+    first_time_of_day_ms = min(
+        (frame.time_of_day_ms for frame in frames if frame.time_of_day_ms is not None),
+        default=None,
+    )
+    first_raw_elapsed_ms = min(
+        (frame.raw_elapsed_ms for frame in frames if frame.raw_elapsed_ms is not None),
+        default=None,
+    )
+    first_raw_elapsed_ms_alt = min(
+        (frame.raw_elapsed_ms_alt for frame in frames if frame.raw_elapsed_ms_alt is not None),
+        default=None,
+    )
+
+    unified_frames: list[UnifiedFAFrame] = []
+    for frame in frames:
+        modality_text = clean_text(frame.modality) or "Unknown"
+        laterality_text = frame.laterality_display or hdb_laterality_display_text(frame.laterality)
+        group_label = f"{modality_text} | {laterality_text}"
+        label_parts = unique_preserve_order(
+            [
+                frame.modality_display,
+                frame.structure_display,
+            ]
+        )
+        label = " | ".join(label_parts) if label_parts else group_label
+        source_parts = [
+            f"Series {frame.series_id}",
+            f"Slice {frame.slice_id}" if frame.slice_id >= 0 else "Slice -",
+            frame.acquisition_source or "",
+        ]
+
+        unified_frames.append(
+            UnifiedFAFrame(
+                order_index=frame.order_index,
+                vendor=VENDOR_HDB,
+                filename=frame.image_id,
+                source_path=input_file.resolve(),
+                image_array=np.asarray(frame.image),
+                group_key=f"{modality_text}:{clean_text(frame.laterality).upper() or 'UNKNOWN'}",
+                group_label=group_label,
+                label=label,
+                source_detail=" | ".join(part for part in source_parts if part),
+                acquisition_datetime=frame.acquisition_datetime_local,
+                acquisition_display=frame.time_display,
+                elapsed_seconds=_compute_hdb_elapsed_seconds(
+                    frame,
+                    first_datetime=first_datetime,
+                    first_time_of_day_ms=first_time_of_day_ms,
+                    first_raw_elapsed_ms=first_raw_elapsed_ms,
+                    first_raw_elapsed_ms_alt=first_raw_elapsed_ms_alt,
+                ),
+                width=frame.width,
+                height=frame.height,
+            )
+        )
+
+    exam_date = "-"
+    if study_info.study_datetime_local is not None:
+        exam_date = study_info.study_datetime_local.strftime("%Y-%m-%d")
+    elif first_datetime is not None:
+        exam_date = first_datetime.strftime("%Y-%m-%d")
+
+    normalized_study = UnifiedFAStudyInfo(
+        vendor=VENDOR_HDB,
+        vendor_label="HDB",
+        patient_name=study_info.patient_name,
+        patient_id=study_info.patient_id,
+        sex=study_info.sex_display,
+        birth_date=study_info.birth_date,
+        exam_date=exam_date,
+        laterality=study_info.laterality_summary or summarize_values(
+            [frame.laterality_display for frame in frames],
+            fallback="-",
+        ),
+        study_code=study_info.modality_summary or "HDB FA E2E",
+        device_model=study_info.device_display,
+    )
+
+    return UnifiedFADataset(
+        vendor=VENDOR_HDB,
+        vendor_label="HDB",
+        input_path=input_file.resolve(),
         study_info=normalized_study,
         frames=unified_frames,
     )
@@ -429,9 +561,11 @@ def load_unified_dataset(input_path: str | Path, *, vendor: str = VENDOR_AUTO) -
         return load_topcon_dataset(path)
     if vendor == VENDOR_ZEISS:
         return load_zeiss_dataset(path)
+    if vendor == VENDOR_HDB:
+        return load_hdb_dataset(path)
 
     detected_vendor = detect_vendor(path)
-    candidate_vendors = unique_preserve_order([detected_vendor or "", VENDOR_TOPCON, VENDOR_ZEISS])
+    candidate_vendors = unique_preserve_order([detected_vendor or "", VENDOR_TOPCON, VENDOR_ZEISS, VENDOR_HDB])
     errors: list[str] = []
 
     for candidate_vendor in candidate_vendors:
@@ -440,6 +574,8 @@ def load_unified_dataset(input_path: str | Path, *, vendor: str = VENDOR_AUTO) -
                 return load_topcon_dataset(path)
             if candidate_vendor == VENDOR_ZEISS:
                 return load_zeiss_dataset(path)
+            if candidate_vendor == VENDOR_HDB:
+                return load_hdb_dataset(path)
         except Exception as exc:
             errors.append(f"{candidate_vendor}: {exc}")
 
@@ -542,7 +678,7 @@ def build_frame_metadata_text(
 
 class ScaledImageLabel(QLabel):
     def __init__(self) -> None:
-        super().__init__("请选择 Topcon 或 Zeiss FA 数据")
+        super().__init__("请选择 Topcon / Zeiss / HDB FA 数据")
         self._pixmap = QPixmap()
         self.setAlignment(Qt.AlignCenter)
         self.setMinimumSize(640, 480)
@@ -680,13 +816,13 @@ class UnifiedFAViewerWindow(QMainWindow):
         )
 
     def _build_controls(self, vendor: str) -> None:
-        self.open_dir_button = QPushButton("打开目录")
+        self.open_dir_button = QPushButton("Open Dir")
         self.open_dir_button.clicked.connect(self.choose_directory)
 
-        self.open_file_button = QPushButton("打开文件")
+        self.open_file_button = QPushButton("Open File")
         self.open_file_button.clicked.connect(self.choose_file)
 
-        self.reload_button = QPushButton("刷新")
+        self.reload_button = QPushButton("Reload")
         self.reload_button.clicked.connect(self.reload_path)
 
         self.path_edit = QLineEdit()
@@ -696,6 +832,7 @@ class UnifiedFAViewerWindow(QMainWindow):
         self.vendor_combo.addItem("自动", VENDOR_AUTO)
         self.vendor_combo.addItem("Topcon", VENDOR_TOPCON)
         self.vendor_combo.addItem("Zeiss", VENDOR_ZEISS)
+        self.vendor_combo.addItem("HDB", VENDOR_HDB)
         initial_index = self.vendor_combo.findData(vendor)
         if initial_index >= 0:
             self.vendor_combo.setCurrentIndex(initial_index)
@@ -707,13 +844,13 @@ class UnifiedFAViewerWindow(QMainWindow):
         self.hide_proofsheet_checkbox.setChecked(True)
         self.hide_proofsheet_checkbox.toggled.connect(self.refresh_visible_frames)
 
-        self.play_button = QPushButton("播放")
+        self.play_button = QPushButton("Play")
         self.play_button.clicked.connect(self.toggle_playback)
 
-        self.prev_button = QPushButton("上一帧")
+        self.prev_button = QPushButton("Prev")
         self.prev_button.clicked.connect(self.retreat_frame)
 
-        self.next_button = QPushButton("下一帧")
+        self.next_button = QPushButton("Next")
         self.next_button.clicked.connect(self.advance_frame)
 
         self.fps_spinbox = QSpinBox()
@@ -791,7 +928,6 @@ class UnifiedFAViewerWindow(QMainWindow):
 
         stable_labels = [
             self.frame_info_label,
-            self.path_label,
             self.patient_name_label,
             self.patient_id_label,
             self.patient_sex_label,
@@ -959,9 +1095,9 @@ class UnifiedFAViewerWindow(QMainWindow):
             start_dir = str(default_path.parent if default_path else Path.home())
         selected, _ = QFileDialog.getOpenFileName(
             self,
-            "选择 Zeiss DICOM 文件",
+            "选择 Zeiss DICOM / HDB E2E 文件",
             start_dir,
-            "DICOM (*.dcm *.dicom);;All files (*)",
+            "FA files (*.dcm *.dicom *.e2e *.E2E);;DICOM (*.dcm *.dicom);;E2E (*.e2e *.E2E);;All files (*)",
         )
         if selected:
             self.path_edit.setText(selected)
@@ -1002,7 +1138,7 @@ class UnifiedFAViewerWindow(QMainWindow):
         current = self.group_combo.currentText()
         self.group_combo.blockSignals(True)
         self.group_combo.clear()
-        self.group_combo.addItem("全部")
+        self.group_combo.addItem("All")
         for group in unique_preserve_order([frame.group_label for frame in self.frames]):
             self.group_combo.addItem(group)
         if current:
@@ -1056,7 +1192,7 @@ class UnifiedFAViewerWindow(QMainWindow):
 
         self.visible_frames = []
         for frame in self.frames:
-            if selected_group != "全部" and frame.group_label != selected_group:
+            if selected_group != "All" and frame.group_label != selected_group:
                 continue
             if hide_proofsheets and frame.is_proofsheet:
                 continue
@@ -1139,6 +1275,10 @@ class UnifiedFAViewerWindow(QMainWindow):
         self.frame_time_label.setText(frame.acquisition_display or "-")
         self.frame_size_label.setText(frame.size_display)
         self.frame_source_label.setText(frame.source_detail or "-")
+        if self.group_combo.currentText() == "All":
+            self.patient_eye_label.setText(self.dataset.study_info.laterality if self.dataset else "-")
+        else:
+            self.patient_eye_label.setText(frame.group_label or "-")
         self.frame_info_label.setText(f"Frame: {index + 1}/{len(self.visible_frames)}")
         self.view_caption_label.setText(
             f"{frame.group_label or '-'} | Frame {index + 1}/{len(self.visible_frames)} | {frame.acquisition_display or '-'}"
@@ -1183,16 +1323,18 @@ class UnifiedFAViewerWindow(QMainWindow):
     def toggle_playback(self) -> None:
         if not self.visible_frames:
             return
-        if self.play_timer.isActive():
-            self.play_timer.stop()
-            self.play_button.setText("播放")
+        self.playing = not self.playing
+        if self.playing:
+            self.play_button.setText("Pause")
+            self._update_play_interval()
         else:
-            self.play_timer.start()
-            self.play_button.setText("暂停")
+            self.play_timer.stop()
+            self.play_button.setText("Play")
 
     def _set_frame_detail_state(self, message: str) -> None:
+        self.playing = False
         self.play_timer.stop()
-        self.play_button.setText("播放")
+        self.play_button.setText("Play")
         self.visible_frames = []
         self.current_visible_index = -1
         self.table.setRowCount(0)
@@ -1200,7 +1342,16 @@ class UnifiedFAViewerWindow(QMainWindow):
         self.timeline_slider.setMaximum(0)
         self.timeline_slider.setValue(0)
         self.timeline_slider.blockSignals(False)
+        self.frame_spin.blockSignals(True)
+        self.frame_spin.setMinimum(1)
+        self.frame_spin.setMaximum(1)
+        self.frame_spin.setValue(1)
+        self.frame_spin.setSuffix(" / 0")
+        self.frame_spin.blockSignals(False)
         self.image_label.clear_image(message)
+        self.view_caption_label.setText("FA frame")
+        self.frame_info_label.setText("Frame: -")
+        self.metadata_edit.setPlainText("")
         self.frame_position_label.setText("-")
         self.frame_file_label.setText("-")
         self.frame_group_label.setText("-")
@@ -1214,6 +1365,8 @@ class UnifiedFAViewerWindow(QMainWindow):
         self.dataset = None
         self.frames = []
         self._set_frame_detail_state(message)
+        self.path_label.setText(message)
+        self.summary_label.setText("Ready to load Topcon / Zeiss FA data")
         self.dataset_path_label.setText("-")
         self.dataset_vendor_label.setText("-")
         self.dataset_frames_label.setText("-")

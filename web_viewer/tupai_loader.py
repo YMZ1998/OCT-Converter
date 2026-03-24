@@ -10,7 +10,7 @@ import numpy as np
 import pydicom
 
 from oct_converter.image_types import FundusImageWithMetaData, OCTVolumeWithMetaData
-from scripts.parse_tupai_location import get_pixel_spacing, load_tupai_data
+from scripts.oct.parse_tupai_location import get_pixel_spacing, load_tupai_data
 
 _TUPAI_OCT_FILENAME = "OCT.dcm"
 _TUPAI_FUNDUS_FILENAME = "Fundus.dcm"

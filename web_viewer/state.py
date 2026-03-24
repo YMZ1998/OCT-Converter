@@ -1092,6 +1092,9 @@ class ViewerState:
         slice_count = self._slice_count(volume)
         first_slice = self._get_slice(volume, 0)
         height, width = first_slice.shape[:2]
+        measurement_scale = self._get_bscan_measurement_scale(
+            pixel_spacing=getattr(volume, "pixel_spacing", None),
+        )
         display_width_units, display_height_units = self._get_bscan_display_units(
             width=width,
             height=height,
@@ -1118,6 +1121,7 @@ class ViewerState:
             "width": width,
             "height": height,
             "pixelSpacing": to_jsonable(getattr(volume, "pixel_spacing", None)),
+            "measurementScale": measurement_scale,
             "displayWidthUnits": display_width_units,
             "displayHeightUnits": display_height_units,
             "displayAspectRatio": (
@@ -1285,6 +1289,24 @@ class ViewerState:
         height: int,
         pixel_spacing: Any,
     ) -> tuple[float, float]:
+        width_spacing, height_spacing = self._extract_bscan_spacing(pixel_spacing)
+
+        if width_spacing is None:
+            width_spacing = 1.0
+        if height_spacing is None:
+            height_spacing = 1.0
+
+        return float(width) * width_spacing, float(height) * height_spacing
+
+    def _get_bscan_measurement_scale(self, *, pixel_spacing: Any) -> dict[str, Any]:
+        width_spacing, height_spacing = self._extract_bscan_spacing(pixel_spacing)
+        return {
+            "isCalibrated": bool(width_spacing is not None and height_spacing is not None),
+            "xMmPerPixel": width_spacing,
+            "yMmPerPixel": height_spacing,
+        }
+
+    def _extract_bscan_spacing(self, pixel_spacing: Any) -> tuple[float | None, float | None]:
         width_spacing = None
         height_spacing = None
 
@@ -1301,12 +1323,7 @@ class ViewerState:
                 width_spacing = self._safe_positive_float(pixel_spacing[0])
                 height_spacing = self._safe_positive_float(pixel_spacing[1])
 
-        if width_spacing is None:
-            width_spacing = 1.0
-        if height_spacing is None:
-            height_spacing = 1.0
-
-        return float(width) * width_spacing, float(height) * height_spacing
+        return width_spacing, height_spacing
 
     def _safe_positive_float(self, value: Any) -> float | None:
         try:
