@@ -129,10 +129,11 @@
 
     .layout {
       display: grid;
-      grid-template-columns: 300px 1fr;
+      grid-template-columns: 300px minmax(0, 1fr);
       gap: 16px;
       padding: 16px;
       min-height: 0;
+      align-items: stretch;
     }
 
     .panel {
@@ -207,8 +208,8 @@
     }
     .compare-view {
       display: grid;
-      grid-template-columns: minmax(220px, 0.72fr) minmax(520px, 1.28fr);
-      gap: 10px;
+      grid-template-columns: minmax(260px, 0.34fr) minmax(420px, 0.5fr) minmax(180px, 0.16fr);
+      gap: 12px;
       min-height: 0;
       align-items: stretch;
     }
@@ -223,6 +224,23 @@
 
     .view-title { font-size: 13px; color: var(--muted); font-weight: 600; }
     .view-hint { display: none !important; min-height: 0; }
+    .contour-panel-body {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+    }
+    .contour-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .contour-actions button {
+      flex: 1 1 0;
+      min-width: 0;
+    }
 
     .canvas-stage {
       position: relative;
@@ -239,17 +257,25 @@
       border: 1px solid var(--border);
       border-radius: 14px;
       overflow: hidden;
-      min-height: clamp(300px, 54vh, 620px);
-      max-height: clamp(320px, 64vh, 720px);
+      height: clamp(320px, 56vh, 720px);
+      min-height: clamp(320px, 56vh, 720px);
+      max-height: clamp(320px, 56vh, 720px);
       flex: 1 1 auto;
       width: 100%;
     }
 
     #fundusStage { cursor: crosshair; }
     #stage {
-      padding: 4px;
-      min-height: clamp(280px, 56vh, 680px);
-      max-height: clamp(320px, 70vh, 760px);
+      padding: 8px;
+    }
+    .contour-stage {
+      align-items: stretch;
+      justify-content: flex-start;
+      padding: 12px;
+    }
+    .contour-stage .contour-layer-list {
+      max-height: none;
+      flex: 1 1 auto;
     }
 
     canvas {
@@ -303,15 +329,28 @@
 
     .hint { font-size: 12px; color: var(--muted); }
     .panel.side-right { display: none; }
+    .viewer-settings {
+      grid-template-columns: repeat(3, minmax(160px, 1fr));
+      align-items: start;
+    }
+    .contour-control {
+      min-height: 0;
+    }
 
     @media (max-width: 1280px) {
-      .layout { grid-template-columns: 280px 1fr; }
-      .compare-view { grid-template-columns: minmax(220px, 0.76fr) minmax(420px, 1.24fr); }
+      .layout { grid-template-columns: 280px minmax(0, 1fr); }
+      .compare-view { grid-template-columns: minmax(220px, 0.3fr) minmax(320px, 0.5fr) minmax(160px, 0.2fr); }
+      .viewer-settings { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
     }
 
     @media (max-width: 900px) {
       .layout { grid-template-columns: 1fr; }
-      .viewer-toolbar, .viewer-controls, .compare-view { grid-template-columns: 1fr; }
+      .viewer-toolbar, .viewer-controls, .compare-view, .viewer-settings { grid-template-columns: 1fr; }
+      .canvas-stage {
+        height: clamp(280px, 48vh, 560px);
+        min-height: clamp(280px, 48vh, 560px);
+        max-height: clamp(280px, 48vh, 560px);
+      }
     }
   </style>
 </head>
@@ -417,12 +456,26 @@
                 <div class="hint view-hint" id="bscanViewHint">右侧显示与左侧定位线匹配的当前切片。</div>
                 <div class="canvas-stage" id="stage">
               <canvas id="octCanvas" width="1024" height="512"></canvas>
-              <div id="emptyState" class="empty">加载后会在这里显示 OCT 切片。</div>
+              <div id="emptyState" class="empty"></div>
+                </div>
+              </div>
+
+              <div class="view-panel">
+                <div class="view-title">轮廓图层</div>
+                <div class="canvas-stage contour-stage">
+                  <div class="contour-panel-body">
+                    <div class="contour-actions">
+                      <button id="contourSelectAllButton" type="button" class="secondary">All</button>
+                      <button id="contourClearAllButton" type="button" class="secondary">Clear</button>
+                    </div>
+                    <div id="contourNames" class="hint">-</div>
+                    <div id="contourLayerList" class="contour-layer-list"></div>
+                  </div>
                 </div>
               </div>
             </div>
 
-            <div class="viewer-controls">
+            <div class="viewer-controls viewer-settings">
               <div class="control">
                 <label for="contrastSlider">对比度</label>
                 <input id="contrastSlider" type="range" min="50" max="300" value="100">
@@ -437,11 +490,6 @@
                 <label for="speedSlider">播放速度</label>
                 <input id="speedSlider" type="range" min="1" max="12" value="5">
                 <div id="speedLabel" class="hint">5 FPS</div>
-              </div>
-              <div class="control">
-                <label>轮廓图层</label>
-                <div id="contourNames" class="hint">-</div>
-                <div id="contourLayerList" class="contour-layer-list"></div>
               </div>
             </div>
           </div>
@@ -546,6 +594,8 @@
       contrastLabel: document.getElementById("contrastLabel"),
       brightnessLabel: document.getElementById("brightnessLabel"),
       speedLabel: document.getElementById("speedLabel"),
+      contourSelectAllButton: document.getElementById("contourSelectAllButton"),
+      contourClearAllButton: document.getElementById("contourClearAllButton"),
       contourNames: document.getElementById("contourNames"),
       contourLayerList: document.getElementById("contourLayerList"),
       fundusViewTitle: document.getElementById("fundusViewTitle"),
@@ -873,6 +923,20 @@
       return contourNames.filter((name) => visibility.get(name) !== false);
     }
 
+    function setAllContourVisibility(visible, volume = currentVolume()) {
+      const contourNames = Array.isArray(volume?.contourNames) ? volume.contourNames : [];
+      const visibility = ensureContourVisibilityState(volume);
+      if (!visibility || !contourNames.length) {
+        return;
+      }
+      contourNames.forEach((name) => {
+        visibility.set(name, visible);
+      });
+      renderContourLayerControls();
+      updateLabels();
+      scheduleDraw();
+    }
+
     function renderContourLayerControls() {
       const volume = currentVolume();
       const contourNames = Array.isArray(volume?.contourNames) ? volume.contourNames : [];
@@ -886,6 +950,12 @@
 
       elements.contourNames.textContent = `${visibleNames.length} / ${contourNames.length} 个图层已显示`;
       const visibility = ensureContourVisibilityState(volume);
+      if (elements.contourSelectAllButton) {
+        elements.contourSelectAllButton.disabled = visibleNames.length === contourNames.length;
+      }
+      if (elements.contourClearAllButton) {
+        elements.contourClearAllButton.disabled = visibleNames.length === 0;
+      }
       elements.contourLayerList.innerHTML = "";
       contourNames.forEach((name, index) => {
         const item = document.createElement("label");
@@ -2083,6 +2153,12 @@
       updateLabels();
       saveUiState();
       scheduleDraw();
+    });
+    elements.contourSelectAllButton?.addEventListener("click", () => {
+      setAllContourVisibility(true);
+    });
+    elements.contourClearAllButton?.addEventListener("click", () => {
+      setAllContourVisibility(false);
     });
     elements.infoButton.addEventListener("click", () => {
       state.showInfo = !state.showInfo;
