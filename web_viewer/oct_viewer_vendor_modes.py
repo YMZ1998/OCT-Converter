@@ -26,7 +26,7 @@ FILE_DIALOG_TYPES = [
     ("Topcon FDS", "*.fds *.FDS"),
     ("Topcon FDA", "*.fda *.FDA"),
     ("Heidelberg E2E", "*.e2e *.E2E"),
-    ("Zeiss IMG", "*.img *.IMG"),
+    ("Zeiss IMG / DICOM", "*.img *.IMG *.dcm *.DCM *.dicom *.DICOM"),
     ("Optovue OCT", "*.oct"),
     ("Bioptigen OCT", "*.OCT"),
     ("DICOM", "*.dcm *.DCM *.dicom *.DICOM"),
@@ -37,10 +37,6 @@ VENDOR_MODE_LABELS = {
     "auto": "自动识别",
     "heidelberg": "海德堡 E2E",
     "topcon": "拓普康 FDA/FDS",
-    "zeiss": "蔡司 IMG",
-    "optovue": "Optovue OCT",
-    "bioptigen": "Bioptigen OCT",
-    "dicom": "通用 DICOM",
     "shiwei": "视微",
     "tupai": "Tupai DICOM",
 }
@@ -53,8 +49,8 @@ VENDOR_MODE_ALIASES = {
 VALID_VENDOR_MODES = frozenset(VENDOR_MODE_LABELS) | frozenset(VENDOR_MODE_ALIASES)
 
 SHIWEI_PATH_HINT = (
-    "当前已选择“视微”，请输入视微数据目录、"
-    "目录中的 `.dcm` / `.dicom` 文件，或可唯一定位该数据集的上级目录：{name}"
+    "当前已选择“视微”，请输入视微数据目录、目录中的 `.dcm` / `.dicom` 文件，"
+    "或可唯一定位该数据集的上级目录：{name}"
 )
 SHIWEI_UPLOAD_HINT = (
     "视微模式不支持单文件上传，请直接输入视微数据目录、"
@@ -73,10 +69,6 @@ VENDOR_MODE_EXTENSIONS: dict[str, tuple[str, ...]] = {
     "auto": tuple(),
     "heidelberg": (".e2e",),
     "topcon": (".fda", ".fds"),
-    "zeiss": (".img",),
-    "optovue": (".oct",),
-    "bioptigen": (".OCT",),
-    "dicom": (".dcm", ".dicom"),
     "shiwei": (".dcm", ".dicom"),
     "tupai": (".dcm", ".dicom"),
 }
@@ -85,10 +77,6 @@ VENDOR_MODE_FILE_DIALOG_TYPES: dict[str, list[tuple[str, str]]] = {
     "auto": FILE_DIALOG_TYPES,
     "heidelberg": [("Heidelberg E2E", "*.e2e *.E2E"), ("All files", "*.*")],
     "topcon": [("Topcon FDA/FDS", "*.fda *.FDA *.fds *.FDS"), ("All files", "*.*")],
-    "zeiss": [("Zeiss IMG", "*.img *.IMG"), ("All files", "*.*")],
-    "optovue": [("Optovue OCT", "*.oct"), ("All files", "*.*")],
-    "bioptigen": [("Bioptigen OCT", "*.OCT"), ("All files", "*.*")],
-    "dicom": [("DICOM", "*.dcm *.DCM *.dicom *.DICOM"), ("All files", "*.*")],
     "shiwei": [("DICOM", "*.dcm *.DCM *.dicom *.DICOM"), ("All files", "*.*")],
     "tupai": [("DICOM", "*.dcm *.DCM *.dicom *.DICOM"), ("All files", "*.*")],
 }
@@ -107,15 +95,12 @@ def is_supported_suffix_for_vendor(path: Path, vendor_mode: str) -> bool:
     """Returns whether the path suffix is valid for the vendor mode."""
 
     normalized_mode = normalize_vendor_mode(vendor_mode)
-    suffix = path.suffix
-    suffix_lower = suffix.lower()
+    suffix_lower = path.suffix.lower()
 
+    if path.name.upper() == "DICOMDIR" and normalized_mode == "auto":
+        return True
     if normalized_mode == "auto":
         return suffix_lower in NORMALIZED_SUPPORTED_EXTENSIONS
-    if normalized_mode == "bioptigen":
-        return suffix == ".OCT"
-    if normalized_mode == "optovue":
-        return suffix == ".oct"
 
     supported = VENDOR_MODE_EXTENSIONS.get(normalized_mode, tuple())
     return suffix_lower in {extension.lower() for extension in supported}
@@ -130,14 +115,6 @@ def build_vendor_validation_error(path: Path, vendor_mode: str) -> str:
         return f"当前已选择“{label}”，请加载 `.e2e` 文件：{name}"
     if vendor_mode == "topcon":
         return f"当前已选择“{label}”，请加载 `.fda` 或 `.fds` 文件：{name}"
-    if vendor_mode == "zeiss":
-        return f"当前已选择“{label}”，请加载 `.img` 文件：{name}"
-    if vendor_mode == "optovue":
-        return f"当前已选择“{label}”，请加载小写扩展名 `.oct` 文件：{name}"
-    if vendor_mode == "bioptigen":
-        return f"当前已选择“{label}”，请加载大写扩展名 `.OCT` 文件：{name}"
-    if vendor_mode == "dicom":
-        return f"当前已选择“{label}”，请加载 `.dcm` 或 `.dicom` 文件：{name}"
     if vendor_mode == "shiwei":
         return SHIWEI_PATH_HINT.format(name=name)
     if vendor_mode == "tupai":
