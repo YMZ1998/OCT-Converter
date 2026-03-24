@@ -37,7 +37,6 @@ from oct_viewer_vendor_modes import (
     is_supported_suffix_for_vendor,
     normalize_vendor_mode,
 )
-from parse_shiwei_location import load_shiwei_oct_dataset, resolve_input_files
 
 
 def parse_args() -> argparse.Namespace:
@@ -145,7 +144,7 @@ def partition_bscan_metadata(
     groups: list[list[dict[str, Any]]] = []
     cursor = 0
     for count in slice_counts:
-        groups.append(bscan_data[cursor : cursor + count])
+        groups.append(bscan_data[cursor: cursor + count])
         cursor += count
     return groups
 
@@ -542,7 +541,8 @@ class ViewerState:
             "recentPath": dataset.recent_path,
             "reader": dataset.reader_name,
             "volumes": [
-                self._describe_volume(volume, index, dataset.fundus_images, dataset.overlay_infos[index] if index < len(dataset.overlay_infos) else None)
+                self._describe_volume(volume, index, dataset.fundus_images,
+                                      dataset.overlay_infos[index] if index < len(dataset.overlay_infos) else None)
                 for index, volume in enumerate(dataset.volumes)
             ],
             "fundusImages": fundus_descriptions,
@@ -976,7 +976,8 @@ class ViewerState:
         header = getattr(volume, "header", None)
         oct_header = getattr(volume, "oct_header", None)
         matched_fundus_index = (
-            overlay_info.matched_fundus_index if overlay_info is not None else self._match_fundus_index(volume, fundus_images)
+            overlay_info.matched_fundus_index if overlay_info is not None else self._match_fundus_index(volume,
+                                                                                                        fundus_images)
         )
         return {
             "index": index,
