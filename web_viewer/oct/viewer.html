@@ -1395,7 +1395,7 @@
       elements.pathValue.textContent = loaded ? state.data.sourcePath : "-";
       elements.volumeCountValue.textContent = String(state.data?.volumes?.length || 0);
       elements.fundusCountValue.textContent = String(state.data?.fundusImages?.length || 0);
-      elements.volumeBadge.textContent = volume ? `${volume.width} ? ${volume.height} ? ${volume.sliceCount} slices` : "Not loaded";
+      elements.volumeBadge.textContent = volume ? `${volume.width} * ${volume.height} * ${volume.sliceCount} slices` : "Not loaded";
       elements.sliceSlider.disabled = !volume;
       elements.prevButton.disabled = !volume;
       elements.nextButton.disabled = !volume;
@@ -1678,7 +1678,7 @@
       elements.pathValue.textContent = loaded ? state.data.sourcePath : "-";
       elements.volumeCountValue.textContent = String(state.data?.volumes?.length || 0);
       elements.fundusCountValue.textContent = String(state.data?.fundusImages?.length || 0);
-      elements.volumeBadge.textContent = volume ? `${volume.width} ? ${volume.height} ? ${volume.sliceCount} slices` : "Not loaded";
+      elements.volumeBadge.textContent = volume ? `${volume.width} * ${volume.height} * ${volume.sliceCount} slices` : "Not loaded";
       elements.sliceSlider.disabled = !volume;
       elements.prevButton.disabled = !volume;
       elements.nextButton.disabled = !volume;

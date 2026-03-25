@@ -19,7 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=8766, help="Port to bind.")
     parser.add_argument(
         "--no-browser",
-        action="store_true",
+        default=True,
         help="Do not auto-open the browser.",
     )
     return parser.parse_args()
