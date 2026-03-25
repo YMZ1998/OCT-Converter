@@ -13,14 +13,11 @@
       --text: #e5e7eb;
       --muted: #cbd5e1;
       --accent: #60a5fa;
-      --accent-2: #f97316;
       --row-alt: #101a2e;
-      --frame-row-height: 36px;
-      --frame-header-height: 40px;
-      --frame-visible-rows: 10;
     }
 
     * { box-sizing: border-box; }
+
     body {
       margin: 0;
       background: var(--bg);
@@ -58,7 +55,11 @@
       z-index: 20;
     }
 
-    .toolbar .path-input { flex: 1; min-width: 260px; }
+    .toolbar .path-input {
+      flex: 1;
+      min-width: 260px;
+    }
+
     .page {
       display: flex;
       gap: 10px;
@@ -86,10 +87,38 @@
       flex: 1;
       min-width: 0;
       min-height: 0;
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) 460px;
-      gap: 10px;
-      align-items: start;
+      display: flex;
+      align-items: flex-start;
+    }
+
+    .viewer-splitter {
+      flex: 0 0 14px;
+      align-self: stretch;
+      margin: 0 8px;
+      border-radius: 999px;
+      background: linear-gradient(180deg, rgba(96, 165, 250, 0.12) 0%, rgba(96, 165, 250, 0.2) 100%);
+      border: 1px solid rgba(96, 165, 250, 0.22);
+      cursor: col-resize;
+      position: relative;
+      user-select: none;
+      touch-action: none;
+    }
+
+    .viewer-splitter::before {
+      content: "";
+      position: absolute;
+      inset: 50% auto auto 50%;
+      width: 4px;
+      height: 56px;
+      transform: translate(-50%, -50%);
+      border-radius: 999px;
+      background: rgba(229, 231, 235, 0.42);
+      box-shadow: -6px 0 0 rgba(229, 231, 235, 0.18), 6px 0 0 rgba(229, 231, 235, 0.18);
+    }
+
+    body.splitter-dragging {
+      cursor: col-resize;
+      user-select: none;
     }
 
     .panel {
@@ -111,23 +140,6 @@
       align-items: center;
     }
 
-    .muted { color: var(--muted); }
-    .mono {
-      font-family: Consolas, "Courier New", monospace;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-
-    .path-display, .summary-text {
-      background: var(--panel-2);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 8px 10px;
-      min-height: 38px;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-
     .nav-grid {
       display: grid;
       grid-template-columns: 100px 1fr 1fr 1fr;
@@ -138,35 +150,62 @@
     .nav-grid .wide { grid-column: 2 / 5; }
     .nav-grid .span2 { grid-column: span 2; }
 
+    .muted { color: var(--muted); }
+
+    .mono {
+      font-family: Consolas, "Courier New", monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .path-display,
+    .summary-text {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      min-height: 38px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
     .image-panel {
+      flex: 1 1 720px;
+      width: 720px;
+      height: min(82vh, 860px);
+      min-width: 520px;
+      min-height: 420px;
       display: flex;
       flex-direction: column;
       gap: 8px;
-      min-height: 0;
-      align-items: flex-start;
+      align-items: stretch;
+      background: var(--panel-2);
+      resize: both;
+      overflow: hidden;
     }
 
-    .frames-panel {
-      width: 460px;
-      min-width: 460px;
-      display: flex;
-      flex-direction: column;
+    .image-info-bar {
+      flex: 0 0 auto;
+      padding: 2px 2px 0;
+      color: var(--text);
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .image-wrap {
-      flex: none;
-      width: min(100%, 980px);
-      height: min(68vh, 680px);
-      min-width: 420px;
-      min-height: 320px;
+      flex: 1 1 auto;
+      width: 100%;
+      min-width: 0;
+      min-height: 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      background: var(--panel-2);
-      border: 1px solid var(--border);
-      border-radius: 10px;
+      background: transparent;
+      border: none;
+      border-radius: 0;
       overflow: hidden;
-      resize: both;
     }
 
     #frameImage {
@@ -176,10 +215,17 @@
       display: block;
     }
 
-    .caption {
-      text-align: center;
-      color: var(--muted);
-      min-height: 24px;
+    .frames-panel {
+      flex: 0 0 auto;
+      width: 620px;
+      min-width: 420px;
+      max-width: min(88vw, 1400px);
+      height: min(82vh, 860px);
+      min-height: 320px;
+      display: flex;
+      flex-direction: column;
+      resize: both;
+      overflow: hidden;
     }
 
     table {
@@ -210,41 +256,61 @@
       border: 1px solid var(--border);
       border-radius: 10px;
       overflow: auto;
-      max-height: 34vh;
     }
 
     .frames-panel .table-wrap {
-      flex: none;
-      height: calc(var(--frame-header-height) + (var(--frame-row-height) * var(--frame-visible-rows)) + 2px);
-      max-height: calc(var(--frame-header-height) + (var(--frame-row-height) * var(--frame-visible-rows)) + 2px);
+      flex: 1 1 auto;
+      min-height: 260px;
+      max-height: none;
     }
 
     .frames-panel table {
-      table-layout: fixed;
-    }
-
-    .frames-panel thead tr {
-      height: var(--frame-header-height);
-    }
-
-    .frames-panel tbody tr {
-      height: var(--frame-row-height);
+      width: max-content;
+      min-width: 100%;
+      table-layout: auto;
     }
 
     .frames-panel th,
     .frames-panel td {
       white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      overflow: visible;
+      text-overflow: clip;
+    }
+
+    .frames-panel th:nth-child(1),
+    .frames-panel td:nth-child(1) {
+      min-width: 56px;
+    }
+
+    .frames-panel th:nth-child(2),
+    .frames-panel td:nth-child(2) {
+      min-width: 180px;
+    }
+
+    .frames-panel th:nth-child(3),
+    .frames-panel td:nth-child(3) {
+      min-width: 120px;
+    }
+
+    .frames-panel th:nth-child(4),
+    .frames-panel td:nth-child(4) {
+      min-width: 180px;
+    }
+
+    .frames-panel th:nth-child(5),
+    .frames-panel td:nth-child(5) {
+      min-width: 110px;
+    }
+
+    .frames-panel th:nth-child(6),
+    .frames-panel td:nth-child(6) {
+      min-width: 220px;
     }
 
     @media (max-width: 1500px) {
-      .viewer-grid {
-        grid-template-columns: minmax(0, 1fr) 380px;
-      }
       .frames-panel {
-        width: 380px;
-        min-width: 380px;
+        width: 560px;
+        height: min(76vh, 800px);
       }
     }
 
@@ -261,23 +327,38 @@
       .page {
         flex-direction: column;
       }
+
       .sidebar {
         width: 100%;
         min-width: 0;
       }
+
       .viewer-grid {
-        grid-template-columns: 1fr;
+        flex-direction: column;
       }
+
+      .viewer-splitter {
+        display: none;
+      }
+
       .frames-panel {
         width: 100%;
         min-width: 0;
+        max-width: none;
+        resize: none;
+        overflow: visible;
+        height: min(58vh, 620px);
       }
-      .frames-panel .table-wrap {
-        max-height: calc(var(--frame-header-height) + (var(--frame-row-height) * var(--frame-visible-rows)) + 2px);
-      }
+
       .image-wrap {
         width: 100%;
+      }
+
+      .image-panel {
+        width: 100%;
         min-width: 0;
+        height: min(68vh, 680px);
+        resize: vertical;
       }
     }
   </style>
@@ -327,18 +408,10 @@
       <section class="panel">
         <div class="panel-title">Display</div>
         <div class="form-grid">
-          <div class="muted">对比度</div>
+          <div class="muted">Contrast</div>
           <input id="contrastSlider" type="range" min="50" max="200" value="100">
-          <div class="muted">亮度</div>
+          <div class="muted">Brightness</div>
           <input id="brightnessSlider" type="range" min="-80" max="80" value="0">
-          <div class="muted">分组</div>
-          <div id="trackInfo" class="path-display">-</div>
-          <div class="muted">眼别</div>
-          <div id="eyeInfo" class="path-display">-</div>
-          <div class="muted">时间</div>
-          <div id="timeInfo" class="path-display">-</div>
-          <div class="muted">来源</div>
-          <div id="sourceInfo" class="path-display">-</div>
         </div>
       </section>
 
@@ -365,31 +438,33 @@
 
     <main class="main">
       <div class="viewer-grid">
-      <section class="panel image-panel">
-        <div class="image-wrap">
-          <img id="frameImage" alt="FA frame">
-        </div>
-        <div id="imageCaption" class="caption">FA frame</div>
-      </section>
+        <section class="panel image-panel">
+          <div id="imageInfoBar" class="image-info-bar">FA | - | Frame -/- | -</div>
+          <div class="image-wrap">
+            <img id="frameImage" alt="">
+          </div>
+        </section>
 
-      <section class="panel frames-panel">
-        <div class="panel-title">Frames</div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>文件</th>
-                <th>分组</th>
-                <th>标签</th>
-                <th>相对时间</th>
-                <th>采集时间</th>
-              </tr>
-            </thead>
-            <tbody id="frameTableBody"></tbody>
-          </table>
-        </div>
-      </section>
+        <div id="viewerSplitter" class="viewer-splitter" role="separator" aria-orientation="vertical" aria-label="调整图像与 Frames 宽度"></div>
+
+        <section class="panel frames-panel">
+          <div class="panel-title">Frames</div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>文件</th>
+                  <th>分组</th>
+                  <th>标签</th>
+                  <th>相对时间</th>
+                  <th>采集时间</th>
+                </tr>
+              </thead>
+              <tbody id="frameTableBody"></tbody>
+            </table>
+          </div>
+        </section>
       </div>
     </main>
   </div>
@@ -401,6 +476,8 @@
       recentPaths: 'fa-web-viewer.recent-paths',
       lastPath: 'fa-web-viewer.last-path',
       vendorMode: 'fa-web-viewer.vendor-mode',
+      imagePanelSize: 'fa-web-viewer.image-panel-size',
+      framesPanelSize: 'fa-web-viewer.frames-panel-size',
     };
 
     const state = {
@@ -430,17 +507,17 @@
       contrastSlider: document.getElementById('contrastSlider'),
       brightnessSlider: document.getElementById('brightnessSlider'),
       frameImage: document.getElementById('frameImage'),
-      imageCaption: document.getElementById('imageCaption'),
+      imageInfoBar: document.getElementById('imageInfoBar'),
+      imagePanel: document.querySelector('.image-panel'),
+      framesPanel: document.querySelector('.frames-panel'),
+      viewerGrid: document.querySelector('.viewer-grid'),
+      viewerSplitter: document.getElementById('viewerSplitter'),
       frameTableBody: document.getElementById('frameTableBody'),
       statusBar: document.getElementById('statusBar'),
       pathDisplay: document.getElementById('pathDisplay'),
       summaryText: document.getElementById('summaryText'),
       metadataText: document.getElementById('metadataText'),
       frameInfo: document.getElementById('frameInfo'),
-      trackInfo: document.getElementById('trackInfo'),
-      eyeInfo: document.getElementById('eyeInfo'),
-      timeInfo: document.getElementById('timeInfo'),
-      sourceInfo: document.getElementById('sourceInfo'),
       patientName: document.getElementById('patientName'),
       patientId: document.getElementById('patientId'),
       examDate: document.getElementById('examDate'),
@@ -489,10 +566,147 @@
       return [...new Set([...serverRecent, ...localRecent])].slice(0, 8);
     }
 
+    function loadStoredPanelSize(key) {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(key) || 'null');
+        if (!parsed || typeof parsed !== 'object') return null;
+        const width = Number(parsed.width);
+        const height = Number(parsed.height);
+        return {
+          width: Number.isFinite(width) ? width : null,
+          height: Number.isFinite(height) ? height : null,
+        };
+      } catch {
+        return null;
+      }
+    }
+
+    function savePanelSize(key, element) {
+      if (!element || window.innerWidth <= 1200) return;
+      const rect = element.getBoundingClientRect();
+      const payload = {
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+      localStorage.setItem(key, JSON.stringify(payload));
+    }
+
+    function applyStoredPanelSize(key, element, options = {}) {
+      if (!element || window.innerWidth <= 1200) return;
+      const stored = loadStoredPanelSize(key);
+      if (!stored) return;
+
+      const minWidth = options.minWidth || 0;
+      const minHeight = options.minHeight || 0;
+      const maxWidth = options.maxWidth || Math.max(window.innerWidth - 80, minWidth);
+      const maxHeight = options.maxHeight || Math.max(window.innerHeight - 120, minHeight);
+
+      if (stored.width) {
+        const width = Math.max(minWidth, Math.min(stored.width, maxWidth));
+        element.style.width = `${width}px`;
+      }
+      if (stored.height) {
+        const height = Math.max(minHeight, Math.min(stored.height, maxHeight));
+        element.style.height = `${height}px`;
+      }
+    }
+
+    function setupPanelPersistence() {
+      applyStoredPanelSize(STORAGE_KEYS.imagePanelSize, els.imagePanel, {
+        minWidth: 520,
+        minHeight: 420,
+        maxWidth: Math.max(window.innerWidth - 520, 520),
+        maxHeight: Math.max(window.innerHeight - 120, 420),
+      });
+      applyStoredPanelSize(STORAGE_KEYS.framesPanelSize, els.framesPanel, {
+        minWidth: 420,
+        minHeight: 320,
+        maxWidth: Math.max(window.innerWidth - 460, 420),
+        maxHeight: Math.max(window.innerHeight - 120, 320),
+      });
+
+      if (typeof ResizeObserver === 'undefined') {
+        return;
+      }
+
+      let timerId = null;
+      const scheduleSave = () => {
+        if (timerId !== null) {
+          clearTimeout(timerId);
+        }
+        timerId = window.setTimeout(() => {
+          savePanelSize(STORAGE_KEYS.imagePanelSize, els.imagePanel);
+          savePanelSize(STORAGE_KEYS.framesPanelSize, els.framesPanel);
+        }, 120);
+      };
+
+      const observer = new ResizeObserver(() => {
+        scheduleSave();
+      });
+
+      observer.observe(els.imagePanel);
+      observer.observe(els.framesPanel);
+      window.addEventListener('beforeunload', () => {
+        savePanelSize(STORAGE_KEYS.imagePanelSize, els.imagePanel);
+        savePanelSize(STORAGE_KEYS.framesPanelSize, els.framesPanel);
+      });
+    }
+
+    function setupViewerSplitter() {
+      if (!els.viewerSplitter || !els.viewerGrid) return;
+
+      const minImageWidth = 520;
+      const minFramesWidth = 420;
+      let activeDrag = null;
+
+      const stopDrag = () => {
+        if (!activeDrag) return;
+        activeDrag = null;
+        document.body.classList.remove('splitter-dragging');
+        savePanelSize(STORAGE_KEYS.imagePanelSize, els.imagePanel);
+        savePanelSize(STORAGE_KEYS.framesPanelSize, els.framesPanel);
+      };
+
+      const onPointerMove = (event) => {
+        if (!activeDrag || window.innerWidth <= 1200) return;
+
+        const deltaX = event.clientX - activeDrag.startX;
+        const nextImageWidth = Math.max(
+          minImageWidth,
+          Math.min(activeDrag.totalWidth - minFramesWidth, activeDrag.startImageWidth + deltaX),
+        );
+        const nextFramesWidth = Math.max(minFramesWidth, activeDrag.totalWidth - nextImageWidth);
+
+        els.imagePanel.style.width = `${Math.round(nextImageWidth)}px`;
+        els.framesPanel.style.width = `${Math.round(nextFramesWidth)}px`;
+      };
+
+      els.viewerSplitter.addEventListener('pointerdown', (event) => {
+        if (window.innerWidth <= 1200) return;
+        event.preventDefault();
+
+        const imageRect = els.imagePanel.getBoundingClientRect();
+        const framesRect = els.framesPanel.getBoundingClientRect();
+        activeDrag = {
+          startX: event.clientX,
+          startImageWidth: imageRect.width,
+          totalWidth: imageRect.width + framesRect.width,
+        };
+
+        document.body.classList.add('splitter-dragging');
+        els.viewerSplitter.setPointerCapture?.(event.pointerId);
+      });
+
+      els.viewerSplitter.addEventListener('pointermove', onPointerMove);
+      els.viewerSplitter.addEventListener('pointerup', stopDrag);
+      els.viewerSplitter.addEventListener('pointercancel', stopDrag);
+      window.addEventListener('pointerup', stopDrag);
+    }
+
     function stopPlayback() {
       state.playing = false;
       if (state.timerId !== null) {
-          clearInterval(state.timerId);
+        clearInterval(state.timerId);
         state.timerId = null;
       }
       els.playButton.textContent = '播放';
@@ -544,6 +758,15 @@
       }
     }
 
+    function resetFrameSelectors() {
+      els.groupSelect.innerHTML = '<option value="ALL">全部</option>';
+      els.eyeSelect.innerHTML = '<option value="ALL">全部</option>';
+      els.frameSlider.max = 0;
+      els.frameSlider.value = 0;
+      els.frameNumberInput.value = 1;
+      els.frameNumberInput.max = 1;
+    }
+
     function setEmptyView(message) {
       stopPlayback();
       state.visibleFrames = [];
@@ -552,23 +775,14 @@
       els.summaryText.textContent = '准备加载 Topcon / Zeiss / HDB FA 数据';
       els.metadataText.textContent = '';
       els.frameInfo.textContent = 'Frame: -';
-      els.trackInfo.textContent = '-';
-      els.eyeInfo.textContent = '-';
-      els.timeInfo.textContent = '-';
-      els.sourceInfo.textContent = '-';
       els.patientName.textContent = '-';
       els.patientId.textContent = '-';
       els.examDate.textContent = '-';
       els.deviceInfo.textContent = '-';
+      els.imageInfoBar.textContent = 'FA | - | Frame -/- | -';
       els.frameImage.removeAttribute('src');
-      els.imageCaption.textContent = 'FA frame';
       els.frameTableBody.innerHTML = '';
-      els.groupSelect.innerHTML = '<option value="ALL">全部</option>';
-      els.eyeSelect.innerHTML = '<option value="ALL">全部</option>';
-      els.frameSlider.max = 0;
-      els.frameSlider.value = 0;
-      els.frameNumberInput.value = 1;
-      els.frameNumberInput.max = 1;
+      resetFrameSelectors();
     }
 
     function applyPayload(payload) {
@@ -585,7 +799,7 @@
         return;
       }
 
-      const dataset = payload.dataset;
+      const dataset = payload.dataset || {};
       els.pathInput.value = payload.sourcePath || dataset.inputPath || '';
       els.pathDisplay.textContent = dataset.inputPath || payload.sourcePath || '-';
       els.summaryText.textContent = dataset.summaryText || '';
@@ -596,11 +810,12 @@
 
       const currentGroup = els.groupSelect.value || 'ALL';
       const currentEye = els.eyeSelect.value || 'ALL';
+
       els.groupSelect.innerHTML = '';
-      const allOption = document.createElement('option');
-      allOption.value = 'ALL';
-      allOption.textContent = '全部';
-      els.groupSelect.appendChild(allOption);
+      const allGroupOption = document.createElement('option');
+      allGroupOption.value = 'ALL';
+      allGroupOption.textContent = '全部';
+      els.groupSelect.appendChild(allGroupOption);
       for (const group of payload.groups || []) {
         const option = document.createElement('option');
         option.value = group;
@@ -652,12 +867,9 @@
         stopPlayback();
         els.frameTableBody.innerHTML = '';
         els.frameImage.removeAttribute('src');
-        els.imageCaption.textContent = '当前筛选条件下没有帧';
+        els.imageInfoBar.textContent = 'FA | - | Frame -/- | -';
         els.metadataText.textContent = '';
         els.frameInfo.textContent = 'Frame: -';
-        els.trackInfo.textContent = '-';
-        els.timeInfo.textContent = '-';
-        els.sourceInfo.textContent = '-';
         return;
       }
 
@@ -700,22 +912,22 @@
 
     function gotoFrame(index) {
       if (!state.visibleFrames.length) return;
+
       const normalized = ((index % state.visibleFrames.length) + state.visibleFrames.length) % state.visibleFrames.length;
       state.currentVisibleIndex = normalized;
+
       const frame = state.visibleFrames[normalized];
-      const dataset = state.payload.dataset;
-      const elapsedText = frame.elapsedDisplay && frame.elapsedDisplay !== '-' ? ` | ${frame.elapsedDisplay}` : '';
+      const dataset = state.payload.dataset || {};
+      const groupText = frame.groupLabel || dataset.vendorLabel || 'FA';
+      const eyeText = frame.lateralityLabel || dataset.laterality || '-';
+      const timeText = frame.acquisitionDisplay || '-';
 
       els.frameSlider.max = Math.max(state.visibleFrames.length - 1, 0);
       els.frameSlider.value = normalized;
       els.frameNumberInput.max = Math.max(state.visibleFrames.length, 1);
       els.frameNumberInput.value = normalized + 1;
       els.frameInfo.textContent = `Frame: ${normalized + 1}/${state.visibleFrames.length}`;
-      els.trackInfo.textContent = `${frame.groupLabel || '-'} | ${state.visibleFrames.length} 帧 | 总计 ${dataset.frameCount}`;
-      els.eyeInfo.textContent = frame.lateralityLabel || dataset.laterality || '-';
-      els.timeInfo.textContent = `${frame.acquisitionDisplay || '-'}${elapsedText}`;
-      els.sourceInfo.textContent = frame.sourceDetail || '-';
-      els.imageCaption.textContent = `${frame.groupLabel || '-'} | Frame ${normalized + 1}/${state.visibleFrames.length} | ${frame.acquisitionDisplay || '-'}`;
+      els.imageInfoBar.textContent = `${groupText} | ${eyeText} | Frame ${normalized + 1}/${state.visibleFrames.length} | ${timeText}`;
       els.metadataText.textContent = frame.metadataText || '';
 
       const contrast = Number(els.contrastSlider.value) || 100;
@@ -726,7 +938,7 @@
         row.classList.toggle('active', Number(row.dataset.index) === normalized);
       }
 
-      setStatus(`${frame.filename} | ${frame.groupLabel || '-'} | ${frame.acquisitionDisplay || '-'}`);
+      setStatus(`${frame.filename} | ${groupText} | ${timeText}`);
     }
 
     async function loadCurrentPath() {
@@ -735,6 +947,7 @@
         setStatus('请先输入路径');
         return;
       }
+
       stopPlayback();
       setStatus('正在加载数据...');
       try {
@@ -767,6 +980,8 @@
 
     async function initialize() {
       try {
+        setupPanelPersistence();
+        setupViewerSplitter();
         const payload = await apiJson('/api/state');
         renderVendorOptions(payload);
         renderRecentPaths(payload);
@@ -786,15 +1001,18 @@
     els.loadButton.addEventListener('click', loadCurrentPath);
     els.openDirButton.addEventListener('click', () => pickPath('directory'));
     els.openFileButton.addEventListener('click', () => pickPath('file'));
+
     els.recentSelect.addEventListener('change', () => {
       if (els.recentSelect.value) {
         els.pathInput.value = els.recentSelect.value;
         loadCurrentPath();
       }
     });
+
     els.vendorSelect.addEventListener('change', () => {
       localStorage.setItem(STORAGE_KEYS.vendorMode, currentVendorMode());
     });
+
     els.groupSelect.addEventListener('change', refreshVisibleFrames);
     els.eyeSelect.addEventListener('change', refreshVisibleFrames);
     els.hideProofsheet.addEventListener('change', refreshVisibleFrames);
@@ -803,11 +1021,14 @@
     els.prevButton.addEventListener('click', () => gotoFrame(state.currentVisibleIndex - 1));
     els.nextButton.addEventListener('click', () => gotoFrame(state.currentVisibleIndex + 1));
     els.playButton.addEventListener('click', togglePlayback);
+
     els.fpsInput.addEventListener('change', () => {
       if (state.playing) startPlayback();
     });
+
     els.contrastSlider.addEventListener('input', () => gotoFrame(state.currentVisibleIndex));
     els.brightnessSlider.addEventListener('input', () => gotoFrame(state.currentVisibleIndex));
+
     els.pathInput.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') loadCurrentPath();
     });
@@ -816,6 +1037,7 @@
       if (event.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName)) {
         if (event.key !== 'Escape') return;
       }
+
       if (event.key === 'ArrowLeft') {
         event.preventDefault();
         gotoFrame(state.currentVisibleIndex - 1);
