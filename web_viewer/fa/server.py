@@ -83,12 +83,15 @@ class FAViewerRequestHandler(BaseHTTPRequestHandler):
         self._send_bytes(status, content, "application/json; charset=utf-8")
 
     def _send_bytes(self, status: HTTPStatus, payload: bytes, content_type: str) -> None:
-        self.send_response(status.value)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(payload)
+        try:
+            self.send_response(status.value)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return
 
 
 def build_handler(state: FAViewerState, html_path: Path) -> type[FAViewerRequestHandler]:

@@ -84,9 +84,8 @@
     }
 
     .viewer-grid {
-      flex: 1;
+      flex: 0 0 auto;
       min-width: 0;
-      min-height: 0;
       display: flex;
       align-items: flex-start;
     }
@@ -107,9 +106,10 @@
     .viewer-splitter::before {
       content: "";
       position: absolute;
-      inset: 50% auto auto 50%;
+      left: 50%;
+      top: 50%;
       width: 4px;
-      height: 56px;
+      height: clamp(72px, calc(100% * 0.26), 150px);
       transform: translate(-50%, -50%);
       border-radius: 999px;
       background: rgba(229, 231, 235, 0.42);
@@ -307,6 +307,107 @@
       min-width: 220px;
     }
 
+    .timeline-panel {
+      flex: 0 0 auto;
+    }
+
+    .timeline-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+
+    .timeline-header .panel-title {
+      margin-bottom: 0;
+    }
+
+    .timeline-labels {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 10px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .timeline-labels span:nth-child(2) {
+      text-align: center;
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .timeline-labels span:last-child {
+      text-align: right;
+    }
+
+    .timeline-track-shell {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      overflow: hidden;
+    }
+
+    .timeline-track {
+      position: relative;
+      height: 56px;
+      min-width: 0;
+    }
+
+    .timeline-track::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 50%;
+      height: 4px;
+      transform: translateY(-50%);
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(96, 165, 250, 0.15) 0%, rgba(96, 165, 250, 0.65) 100%);
+      box-shadow: inset 0 0 0 1px rgba(96, 165, 250, 0.18);
+    }
+
+    .timeline-marker {
+      position: absolute;
+      top: 50%;
+      width: 14px;
+      height: 14px;
+      padding: 0;
+      border-radius: 999px;
+      border: 2px solid rgba(229, 231, 235, 0.7);
+      background: #1e293b;
+      transform: translate(-50%, -50%);
+      box-shadow: 0 0 0 4px rgba(15, 23, 42, 0.78);
+      transition: transform 0.14s ease, background 0.14s ease, box-shadow 0.14s ease;
+    }
+
+    .timeline-marker:hover {
+      background: rgba(96, 165, 250, 0.35);
+      transform: translate(-50%, -50%) scale(1.08);
+    }
+
+    .timeline-marker.active {
+      width: 18px;
+      height: 18px;
+      background: var(--accent);
+      border-color: #eff6ff;
+      box-shadow: 0 0 0 6px rgba(96, 165, 250, 0.22);
+    }
+
+    .timeline-marker.is-proofsheet {
+      border-style: dashed;
+      opacity: 0.78;
+    }
+
+    .timeline-marker:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 3px rgba(15, 23, 42, 1), 0 0 0 7px rgba(96, 165, 250, 0.28);
+    }
+
     @media (max-width: 1500px) {
       .frames-panel {
         width: 560px;
@@ -466,6 +567,21 @@
           </div>
         </section>
       </div>
+
+      <section class="panel timeline-panel">
+        <div class="timeline-header">
+          <div class="panel-title">时间轴</div>
+          <div id="timelineSummary" class="muted">未加载帧</div>
+        </div>
+        <div class="timeline-labels">
+          <span id="timelineStartLabel">-</span>
+          <span id="timelineCurrentLabel">-</span>
+          <span id="timelineEndLabel">-</span>
+        </div>
+        <div class="timeline-track-shell">
+          <div id="timelineTrack" class="timeline-track" role="listbox" aria-label="帧时间轴"></div>
+        </div>
+      </section>
     </main>
   </div>
 
@@ -486,6 +602,7 @@
       currentVisibleIndex: -1,
       playing: false,
       timerId: null,
+      timelineModel: null,
     };
 
     const els = {
@@ -522,6 +639,11 @@
       patientId: document.getElementById('patientId'),
       examDate: document.getElementById('examDate'),
       deviceInfo: document.getElementById('deviceInfo'),
+      timelineSummary: document.getElementById('timelineSummary'),
+      timelineStartLabel: document.getElementById('timelineStartLabel'),
+      timelineCurrentLabel: document.getElementById('timelineCurrentLabel'),
+      timelineEndLabel: document.getElementById('timelineEndLabel'),
+      timelineTrack: document.getElementById('timelineTrack'),
     };
 
     function setStatus(message) {
@@ -703,6 +825,146 @@
       window.addEventListener('pointerup', stopDrag);
     }
 
+    function formatTimelineDateTime(value) {
+      if (!value) return '-';
+      const parsed = new Date(value);
+      if (!Number.isFinite(parsed.getTime())) return '-';
+      return parsed.toLocaleString('zh-CN', { hour12: false });
+    }
+
+    function getFrameElapsedValue(frame) {
+      const value = Number(frame?.elapsedSeconds);
+      return Number.isFinite(value) ? value : null;
+    }
+
+    function getFrameAcquisitionValue(frame) {
+      const value = Date.parse(frame?.acquisitionDatetime || '');
+      return Number.isFinite(value) ? value / 1000 : null;
+    }
+
+    function getTimelineLabelForFrame(frame, mode) {
+      if (!frame) return '-';
+      if (mode === 'elapsed') {
+        return frame.elapsedDisplay || frame.acquisitionDisplay || '-';
+      }
+      if (mode === 'acquisition') {
+        return frame.acquisitionDisplay || formatTimelineDateTime(frame.acquisitionDatetime) || frame.elapsedDisplay || '-';
+      }
+      return `Frame ${frame.originalIndex + 1}`;
+    }
+
+    function getTimelineModeLabel(mode) {
+      if (mode === 'elapsed') return '相对时间';
+      if (mode === 'acquisition') return '采集时间';
+      return '帧顺序';
+    }
+
+    function buildTimelineModel(frames) {
+      const defaultPositions = frames.map((_, index) => (
+        frames.length <= 1 ? 0.5 : index / (frames.length - 1)
+      ));
+
+      const buildScaledModel = (mode, values) => {
+        const validValues = values.filter((value) => value !== null);
+        if (validValues.length < 2) return null;
+        const minValue = Math.min(...validValues);
+        const maxValue = Math.max(...validValues);
+        if (!Number.isFinite(minValue) || !Number.isFinite(maxValue) || maxValue <= minValue) {
+          return null;
+        }
+        return {
+          mode,
+          positions: values.map((value, index) => (
+            value === null ? defaultPositions[index] : (value - minValue) / (maxValue - minValue)
+          )),
+        };
+      };
+
+      return (
+        buildScaledModel('elapsed', frames.map(getFrameElapsedValue))
+        || buildScaledModel('acquisition', frames.map(getFrameAcquisitionValue))
+        || { mode: 'index', positions: defaultPositions }
+      );
+    }
+
+    function clearTimeline(summary = '未加载帧') {
+      state.timelineModel = null;
+      els.timelineSummary.textContent = summary;
+      els.timelineStartLabel.textContent = '-';
+      els.timelineCurrentLabel.textContent = '-';
+      els.timelineEndLabel.textContent = '-';
+      els.timelineTrack.innerHTML = '';
+    }
+
+    function buildTimelineMarkerTitle(frame, visibleIndex, mode) {
+      return [
+        `第 ${visibleIndex + 1}/${state.visibleFrames.length} 帧`,
+        frame.filename || '',
+        frame.groupLabel || '',
+        frame.lateralityLabel || '',
+        frame.label || '',
+        getTimelineLabelForFrame(frame, mode),
+      ].filter(Boolean).join('\n');
+    }
+
+    function renderTimeline() {
+      if (!state.visibleFrames.length) {
+        clearTimeline('暂无可显示帧');
+        return;
+      }
+
+      const model = buildTimelineModel(state.visibleFrames);
+      state.timelineModel = model;
+
+      els.timelineSummary.textContent = `${getTimelineModeLabel(model.mode)} · ${state.visibleFrames.length} 帧`;
+      els.timelineStartLabel.textContent = getTimelineLabelForFrame(state.visibleFrames[0], model.mode);
+      els.timelineEndLabel.textContent = getTimelineLabelForFrame(
+        state.visibleFrames[state.visibleFrames.length - 1],
+        model.mode,
+      );
+
+      els.timelineTrack.innerHTML = '';
+      state.visibleFrames.forEach((frame, visibleIndex) => {
+        const marker = document.createElement('button');
+        marker.type = 'button';
+        marker.className = 'timeline-marker';
+        if (frame.isProofsheet) {
+          marker.classList.add('is-proofsheet');
+        }
+        marker.dataset.index = String(visibleIndex);
+        marker.style.left = `${(model.positions[visibleIndex] * 100).toFixed(4)}%`;
+        marker.title = buildTimelineMarkerTitle(frame, visibleIndex, model.mode);
+        marker.setAttribute('role', 'option');
+        marker.setAttribute('aria-label', buildTimelineMarkerTitle(frame, visibleIndex, model.mode));
+        marker.addEventListener('click', () => gotoFrame(visibleIndex));
+        els.timelineTrack.appendChild(marker);
+      });
+
+      updateTimelineSelection();
+    }
+
+    function updateTimelineSelection() {
+      const frame = state.visibleFrames[state.currentVisibleIndex];
+      for (const marker of els.timelineTrack.querySelectorAll('.timeline-marker')) {
+        const active = Number(marker.dataset.index) === state.currentVisibleIndex;
+        marker.classList.toggle('active', active);
+        marker.setAttribute('aria-selected', active ? 'true' : 'false');
+      }
+
+      if (!frame || !state.timelineModel) {
+        els.timelineCurrentLabel.textContent = '-';
+        return;
+      }
+
+      const label = getTimelineLabelForFrame(frame, state.timelineModel.mode);
+      const parts = [`第 ${state.currentVisibleIndex + 1}/${state.visibleFrames.length} 帧`];
+      if (frame.groupLabel) parts.push(frame.groupLabel);
+      if (frame.lateralityLabel) parts.push(frame.lateralityLabel);
+      if (frame.label) parts.push(frame.label);
+      if (label && label !== '-') parts.push(label);
+      els.timelineCurrentLabel.textContent = parts.join(' · ');
+    }
+
     function stopPlayback() {
       state.playing = false;
       if (state.timerId !== null) {
@@ -782,6 +1044,7 @@
       els.imageInfoBar.textContent = 'FA | - | Frame -/- | -';
       els.frameImage.removeAttribute('src');
       els.frameTableBody.innerHTML = '';
+      clearTimeline();
       resetFrameSelectors();
     }
 
@@ -870,6 +1133,7 @@
         els.imageInfoBar.textContent = 'FA | - | Frame -/- | -';
         els.metadataText.textContent = '';
         els.frameInfo.textContent = 'Frame: -';
+        clearTimeline('暂无可显示帧');
         return;
       }
 
@@ -880,6 +1144,7 @@
       }
 
       renderFrameTable();
+      renderTimeline();
       gotoFrame(targetIndex);
     }
 
@@ -938,6 +1203,7 @@
         row.classList.toggle('active', Number(row.dataset.index) === normalized);
       }
 
+      updateTimelineSelection();
       setStatus(`${frame.filename} | ${groupText} | ${timeText}`);
     }
 

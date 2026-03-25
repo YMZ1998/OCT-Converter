@@ -169,8 +169,11 @@
     }
 
     .kv div:nth-child(odd) { color: var(--muted); }
-    .viewer-wrap { display: grid; grid-template-rows: auto 1fr auto; gap: 12px; height: 100%; }
+    .viewer-wrap { display: grid; grid-template-rows: 1fr; gap: 12px; height: 100%; }
     .viewer-toolbar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .viewer-toolbar-side { grid-template-columns: 1fr; }
+    .viewer-toolbar-side .segmented { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .viewer-toolbar-side .viewer-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .viewer-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
     .control { display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: var(--muted); }
     .contour-layer-list {
@@ -207,9 +210,18 @@
       font-size: 12px;
     }
     .compare-view {
+      --compare-col-1: 34%;
+      --compare-col-2: 50%;
+      --compare-col-3: 16%;
       display: grid;
-      grid-template-columns: minmax(260px, 0.34fr) minmax(420px, 0.5fr) minmax(180px, 0.16fr);
-      gap: 12px;
+      grid-template-columns:
+        minmax(260px, var(--compare-col-1))
+        12px
+        minmax(420px, var(--compare-col-2))
+        12px
+        minmax(180px, var(--compare-col-3));
+      column-gap: 0;
+      row-gap: 12px;
       min-height: 0;
       align-items: stretch;
     }
@@ -220,6 +232,72 @@
       gap: 8px;
       min-height: 0;
       min-width: 0;
+    }
+
+    .view-width-resizer,
+    .view-height-resizer {
+      position: relative;
+      user-select: none;
+      touch-action: none;
+    }
+
+    .view-width-resizer {
+      cursor: col-resize;
+      min-height: 0;
+      align-self: stretch;
+    }
+
+    .view-width-resizer::before {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 18px;
+      bottom: 18px;
+      width: 2px;
+      border-radius: 999px;
+      transform: translateX(-50%);
+      background: rgba(148, 163, 184, 0.3);
+      transition: background 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    .view-height-resizer {
+      flex: 0 0 14px;
+      height: 14px;
+      cursor: row-resize;
+    }
+
+    .view-height-resizer::before {
+      content: "";
+      position: absolute;
+      left: 18px;
+      right: 18px;
+      top: 50%;
+      height: 2px;
+      border-radius: 999px;
+      transform: translateY(-50%);
+      background: rgba(148, 163, 184, 0.3);
+      transition: background 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    .view-width-resizer:hover::before,
+    .view-width-resizer.active::before,
+    .view-height-resizer:hover::before,
+    .view-height-resizer.active::before {
+      background: rgba(56, 189, 248, 0.9);
+      box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.25);
+    }
+
+    body.is-resizing,
+    body.is-resizing * {
+      user-select: none;
+    }
+
+    body.is-resizing-col {
+      cursor: col-resize;
+    }
+
+    body.is-resizing-row {
+      cursor: row-resize;
     }
 
     .view-title { font-size: 13px; color: var(--muted); font-weight: 600; }
@@ -258,8 +336,8 @@
       border-radius: 14px;
       overflow: hidden;
       height: clamp(320px, 56vh, 720px);
-      min-height: clamp(320px, 56vh, 720px);
-      max-height: clamp(320px, 56vh, 720px);
+      min-height: 220px;
+      max-height: 85vh;
       flex: 1 1 auto;
       width: 100%;
     }
@@ -385,8 +463,13 @@
     .hint { font-size: 12px; color: var(--muted); }
     .panel.side-right { display: none; }
     .viewer-settings {
-      grid-template-columns: repeat(3, minmax(160px, 1fr));
+      grid-template-columns: 1fr;
       align-items: start;
+      align-content: start;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(2, 6, 23, 0.68);
     }
     .contour-control {
       min-height: 0;
@@ -394,17 +477,25 @@
 
     @media (max-width: 1280px) {
       .layout { grid-template-columns: 280px minmax(0, 1fr); }
-      .compare-view { grid-template-columns: minmax(220px, 0.3fr) minmax(320px, 0.5fr) minmax(160px, 0.2fr); }
-      .viewer-settings { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
+      .compare-view {
+        grid-template-columns:
+          minmax(220px, var(--compare-col-1))
+          12px
+          minmax(320px, var(--compare-col-2))
+          12px
+          minmax(160px, var(--compare-col-3));
+      }
     }
 
     @media (max-width: 900px) {
       .layout { grid-template-columns: 1fr; }
-      .viewer-toolbar, .viewer-controls, .compare-view, .viewer-settings { grid-template-columns: 1fr; }
+      .viewer-toolbar, .viewer-controls, .viewer-settings { grid-template-columns: 1fr; }
+      .compare-view { grid-template-columns: 1fr; }
+      .view-width-resizer { display: none; }
       .canvas-stage {
         height: clamp(280px, 48vh, 560px);
-        min-height: clamp(280px, 48vh, 560px);
-        max-height: clamp(280px, 48vh, 560px);
+        min-height: 200px;
+        max-height: 80vh;
       }
     }
   </style>
@@ -458,6 +549,47 @@
             <label for="fundusSelect">Select Fundus</label>
             <select id="fundusSelect"></select>
           </div>
+          <div class="viewer-controls viewer-settings">
+            <div class="control">
+              <label for="contrastSlider">Contrast</label>
+              <input id="contrastSlider" type="range" min="50" max="300" value="100">
+              <div id="contrastLabel" class="hint">100%</div>
+            </div>
+            <div class="control">
+              <label for="brightnessSlider">Brightness</label>
+              <input id="brightnessSlider" type="range" min="-100" max="100" value="0">
+              <div id="brightnessLabel" class="hint">0</div>
+            </div>
+            <div class="control">
+              <label for="speedSlider">Playback Speed</label>
+              <input id="speedSlider" type="range" min="1" max="12" value="5">
+              <div id="speedLabel" class="hint">5 FPS</div>
+            </div>
+          </div>
+          <div class="viewer-toolbar viewer-toolbar-side">
+            <div class="control">
+              <label for="sliceSlider">Slice</label>
+              <input id="sliceSlider" type="range" min="0" max="0" value="0">
+              <div id="sliceLabel" class="hint">Slice 0 / 0</div>
+            </div>
+            <div class="control">
+              <label>Overlay Display</label>
+              <div class="segmented" id="overlayDisplayGroup">
+                <button id="overlayBoxButton" type="button" class="secondary mode-button active" data-overlay-display="box">Scan Box</button>
+                <button id="overlayLineButton" type="button" class="secondary mode-button" data-overlay-display="line">Localizer Line</button>
+              </div>
+            </div>
+            <div class="viewer-controls">
+              <button id="prevButton" class="secondary">Prev</button>
+              <button id="playButton" class="secondary">Play</button>
+              <button id="nextButton" class="secondary">Next</button>
+              <button id="zoomOutButton" class="secondary">Zoom Out</button>
+              <button id="zoomResetButton" class="secondary">100%</button>
+              <button id="zoomInButton" class="secondary">Zoom In</button>
+              <button id="overlayButton" class="secondary">Contours On</button>
+              <button id="infoButton" class="secondary" hidden>Hints On</button>
+            </div>
+          </div>
           <div class="pill" id="volumeBadge">Not Loaded</div>
           <div class="hint">Supports wheel-based slice navigation, arrow-key slice navigation, and spacebar playback.</div>
         </div>
@@ -467,42 +599,19 @@
         <div class="panel-header">OCT Slice Viewer</div>
         <div class="panel-body">
           <div class="viewer-wrap">
-            <div class="viewer-toolbar">
-              <div class="control">
-                <label for="sliceSlider">Slice</label>
-                <input id="sliceSlider" type="range" min="0" max="0" value="0">
-                <div id="sliceLabel" class="hint">Slice 0 / 0</div>
-              </div>
-              <div class="control">
-                <label>Overlay Display</label>
-                <div class="segmented" id="overlayDisplayGroup">
-                  <button id="overlayBoxButton" type="button" class="secondary mode-button active" data-overlay-display="box">Scan Box</button>
-                  <button id="overlayLineButton" type="button" class="secondary mode-button" data-overlay-display="line">Localizer Line</button>
-                </div>
-              </div>
-              <div class="viewer-controls">
-                <button id="prevButton" class="secondary">Prev</button>
-                <button id="playButton" class="secondary">Play</button>
-                <button id="nextButton" class="secondary">Next</button>
-                <button id="zoomOutButton" class="secondary">Zoom Out</button>
-                <button id="zoomResetButton" class="secondary">100%</button>
-                <button id="zoomInButton" class="secondary">Zoom In</button>
-                <button id="overlayButton" class="secondary">Contours On</button>
-                <button id="infoButton" class="secondary" hidden>Hints On</button>
-              </div>
-            </div>
-
-            <div class="compare-view">
-              <div class="view-panel">
+            <div class="compare-view" id="compareView">
+              <div class="view-panel" id="fundusViewPanel">
                 <div class="view-title" id="fundusViewTitle">Fundus / Localizer</div>
                 <div class="hint view-hint" id="fundusViewHint">Click a localizer line to jump to the matching B-scan.</div>
                 <div class="canvas-stage" id="fundusStage">
                   <canvas id="fundusCanvas" width="1024" height="1024"></canvas>
                   <div id="fundusEmptyState" class="empty"></div>
                 </div>
+                <div class="view-height-resizer" data-stage-target="fundusStage" title="Drag to resize view height"></div>
               </div>
+              <div class="view-width-resizer" data-resize-index="0" title="Drag to resize panel width"></div>
 
-              <div class="view-panel">
+              <div class="view-panel" id="bscanViewPanel">
                 <div class="view-title" id="bscanViewTitle">Current B-Scan</div>
                 <div class="hint view-hint" id="bscanViewHint">The right panel shows the current B-scan matched to the selected localizer line.</div>
                 <div class="measurement-toolbar">
@@ -518,11 +627,13 @@
                   </div>
                   <div id="emptyState" class="empty"></div>
                 </div>
+                <div class="view-height-resizer" data-stage-target="stage" title="Drag to resize view height"></div>
               </div>
+              <div class="view-width-resizer" data-resize-index="1" title="Drag to resize panel width"></div>
 
-              <div class="view-panel">
+              <div class="view-panel" id="contourViewPanel">
                 <div class="view-title">Contour Layers</div>
-                <div class="canvas-stage contour-stage">
+                <div class="canvas-stage contour-stage" id="contourStage">
                   <div class="contour-panel-body">
                     <div class="contour-actions">
                       <button id="contourSelectAllButton" type="button" class="secondary">All</button>
@@ -532,24 +643,7 @@
                     <div id="contourLayerList" class="contour-layer-list"></div>
                   </div>
                 </div>
-              </div>
-            </div>
-
-            <div class="viewer-controls viewer-settings">
-              <div class="control">
-                <label for="contrastSlider">Contrast</label>
-                <input id="contrastSlider" type="range" min="50" max="300" value="100">
-                <div id="contrastLabel" class="hint">100%</div>
-              </div>
-              <div class="control">
-                <label for="brightnessSlider">Brightness</label>
-                <input id="brightnessSlider" type="range" min="-100" max="100" value="0">
-                <div id="brightnessLabel" class="hint">0</div>
-              </div>
-              <div class="control">
-                <label for="speedSlider">Playback Speed</label>
-                <input id="speedSlider" type="range" min="1" max="12" value="5">
-                <div id="speedLabel" class="hint">5 FPS</div>
+                <div class="view-height-resizer" data-stage-target="contourStage" title="Drag to resize view height"></div>
               </div>
             </div>
           </div>
@@ -588,6 +682,12 @@
       showInfo: true,
       lastPath: "",
       vendorMode: "auto",
+      compareColumns: [34, 50, 16],
+      stageHeights: {
+        fundusStage: null,
+        stage: null,
+        contourStage: null,
+      },
     };
 
     const state = {
@@ -619,13 +719,25 @@
       measurementHoverPoint: null,
       measurementHoverHandle: null,
       measurementDrag: null,
+      measurementPointerDownPoint: null,
       measurementSuppressClick: false,
       measurementsBySlice: new Map(),
       selectedMeasurementIds: new Set(),
       nextMeasurementId: 1,
+      layoutResize: null,
     };
 
     const CONTOUR_COLORS = ["#38bdf8", "#22c55e", "#f97316", "#f43f5e", "#a78bfa", "#facc15"];
+    const COMPARE_PANEL_MIN_WIDTHS = [260, 420, 180];
+    const COMPARE_PANEL_COMPACT_MIN_WIDTHS = [220, 320, 160];
+    const MIN_STAGE_HEIGHT = 220;
+    const MIN_STAGE_HEIGHT_COMPACT = 200;
+    const MEASUREMENT_LINE_HIT_CSS_PX = 7;
+    const MEASUREMENT_HANDLE_HIT_CSS_PX = 14;
+    const MEASUREMENT_SELECTED_HANDLE_HIT_CSS_PX = 20;
+    const MEASUREMENT_HANDLE_RADIUS = 3.5;
+    const MEASUREMENT_SELECTED_HANDLE_RADIUS = 4.75;
+    const MEASUREMENT_ACTIVE_HANDLE_RADIUS = 6.5;
 
     const elements = {
       pathInput: document.getElementById("pathInput"),
@@ -671,6 +783,10 @@
       contourClearAllButton: document.getElementById("contourClearAllButton"),
       contourNames: document.getElementById("contourNames"),
       contourLayerList: document.getElementById("contourLayerList"),
+      compareView: document.getElementById("compareView"),
+      fundusViewPanel: document.getElementById("fundusViewPanel"),
+      bscanViewPanel: document.getElementById("bscanViewPanel"),
+      contourViewPanel: document.getElementById("contourViewPanel"),
       fundusViewTitle: document.getElementById("fundusViewTitle"),
       fundusViewHint: document.getElementById("fundusViewHint"),
       bscanViewTitle: document.getElementById("bscanViewTitle"),
@@ -685,6 +801,9 @@
       emptyState: document.getElementById("emptyState"),
       fundusStage: document.getElementById("fundusStage"),
       stage: document.getElementById("stage"),
+      contourStage: document.getElementById("contourStage"),
+      compareWidthResizers: Array.from(document.querySelectorAll(".view-width-resizer")),
+      stageHeightResizers: Array.from(document.querySelectorAll(".view-height-resizer")),
     };
 
     const ctx = elements.octCanvas.getContext("2d");
@@ -754,6 +873,65 @@
       }
     }
 
+    function sanitizeCompareColumns(columns) {
+      if (!Array.isArray(columns) || columns.length !== 3) {
+        return [...DEFAULT_UI_STATE.compareColumns];
+      }
+      const values = columns.map((value) => Number(value));
+      if (values.some((value) => !Number.isFinite(value) || value <= 0)) {
+        return [...DEFAULT_UI_STATE.compareColumns];
+      }
+      const total = values.reduce((sum, value) => sum + value, 0);
+      if (!total) {
+        return [...DEFAULT_UI_STATE.compareColumns];
+      }
+      return values.map((value) => (value / total) * 100);
+    }
+
+    function sanitizeStageHeights(stageHeights) {
+      const source = stageHeights && typeof stageHeights === "object" ? stageHeights : {};
+      return {
+        fundusStage: Number.isFinite(Number(source.fundusStage)) && Number(source.fundusStage) > 0
+          ? Math.round(Number(source.fundusStage))
+          : null,
+        stage: Number.isFinite(Number(source.stage)) && Number(source.stage) > 0
+          ? Math.round(Number(source.stage))
+          : null,
+        contourStage: Number.isFinite(Number(source.contourStage)) && Number(source.contourStage) > 0
+          ? Math.round(Number(source.contourStage))
+          : null,
+      };
+    }
+
+    function captureCompareColumnState(fallback = DEFAULT_UI_STATE.compareColumns) {
+      if (isCompareViewSingleColumn()) {
+        return sanitizeCompareColumns(fallback);
+      }
+      const widths = getCompareViewPanelWidths();
+      if (widths.length !== 3) {
+        return sanitizeCompareColumns(fallback);
+      }
+      return sanitizeCompareColumns(widths);
+    }
+
+    function captureStageHeightState(fallback = DEFAULT_UI_STATE.stageHeights) {
+      const next = sanitizeStageHeights(fallback);
+      [
+        ["fundusStage", elements.fundusStage],
+        ["stage", elements.stage],
+        ["contourStage", elements.contourStage],
+      ].forEach(([key, stage]) => {
+        if (!stage) {
+          return;
+        }
+        const height = Math.round(stage.getBoundingClientRect().height);
+        if (Number.isFinite(height) && height > 0) {
+          next[key] = height;
+        }
+      });
+      return next;
+    }
+
     function saveUiState() {
       const persisted = getUiState();
       const currentPath = elements.pathInput.value.trim();
@@ -767,6 +945,8 @@
         showInfo: state.showInfo,
         lastPath: currentPath || persisted.lastPath || "",
         vendorMode: state.vendorMode || "auto",
+        compareColumns: captureCompareColumnState(persisted.compareColumns),
+        stageHeights: captureStageHeightState(persisted.stageHeights),
       };
       localStorage.setItem(STORAGE_KEYS.uiState, JSON.stringify(payload));
     }
@@ -913,8 +1093,14 @@
       state.contourCache.clear();
     }
 
+    function clampValue(value, min, max) {
+      const numeric = Number(value);
+      const safeValue = Number.isFinite(numeric) ? numeric : min;
+      return Math.min(max, Math.max(min, safeValue));
+    }
+
     function clampBscanZoom(value) {
-      return Math.min(4, Math.max(0.25, Number(value) || 1));
+      return clampValue(value, 0.25, 4);
     }
 
     function setBscanZoom(value, { persist = true } = {}) {
@@ -965,6 +1151,10 @@
       return `M${index >= 0 ? index + 1 : "?"}`;
     }
 
+    function isMeasurementSelected(measurementId) {
+      return state.selectedMeasurementIds.has(measurementId);
+    }
+
     function getMeasurementScale(volume = currentVolume()) {
       return volume?.measurementScale || {
         isCalibrated: false,
@@ -1007,14 +1197,35 @@
     function formatMeasurementPair(pxValue, mmValue) {
       const parts = [`${formatMeasurementNumber(pxValue)} px`];
       if (mmValue != null && Number.isFinite(Number(mmValue))) {
-        parts.push(`${formatMeasurementNumber(mmValue, 3)} mm`);
+        parts.push(`${formatMeasurementNumber(mmValue, 4)} mm`);
       }
       return parts.join(" / ");
     }
 
+    function getMeasurementDisplayDistance(measurement) {
+      const stats = computeMeasurementStats(measurement);
+      if (stats.lengthMm != null && Number.isFinite(Number(stats.lengthMm))) {
+        return `${formatMeasurementNumber(stats.lengthMm, 4)} mm`;
+      }
+      return `${formatMeasurementNumber(stats.lengthPx)} px`;
+    }
+
+    function formatInterpolatedMeasurement(pxValue, mmValue) {
+      if (mmValue != null && Number.isFinite(Number(mmValue))) {
+        return `${formatMeasurementNumber(mmValue, 4)} mm`;
+      }
+      return `${formatMeasurementNumber(pxValue)} px`;
+    }
+
+    function getMeasurementOverlayLabel(measurement, measurements = getCurrentMeasurements()) {
+      return `${getMeasurementLabel(measurement, measurements)} | ${getMeasurementDisplayDistance(measurement)}`;
+    }
+
     function measurementAngleRadians(measurement) {
       const stats = computeMeasurementStats(measurement);
-      return Math.atan2(stats.dyPx, stats.dxPx);
+      const deltaX = stats.isCalibrated ? stats.dxMm : stats.dxPx;
+      const deltaY = stats.isCalibrated ? stats.dyMm : stats.dyPx;
+      return Math.atan2(Number(deltaY) || 0, Number(deltaX) || 0);
     }
 
     function computeSelectedMeasurementAngle(selectedMeasurements) {
@@ -1041,6 +1252,7 @@
       state.measurementHoverPoint = null;
       state.measurementHoverHandle = null;
       state.measurementDrag = null;
+      state.measurementPointerDownPoint = null;
       state.measurementSuppressClick = false;
       state.selectedMeasurementIds = new Set();
     }
@@ -1083,7 +1295,7 @@
         const measurement = selectedMeasurements[0];
         const stats = computeMeasurementStats(measurement);
         return {
-          text: `Selected ${getMeasurementLabel(measurement, measurements)} | dx ${formatMeasurementPair(Math.abs(stats.dxPx), stats.dxMm == null ? null : Math.abs(stats.dxMm))} | dy ${formatMeasurementPair(Math.abs(stats.dyPx), stats.dyMm == null ? null : Math.abs(stats.dyMm))} | Length ${formatMeasurementPair(stats.lengthPx, stats.lengthMm)}`,
+          text: `Selected ${getMeasurementLabel(measurement, measurements)} | Horizontal ${formatInterpolatedMeasurement(Math.abs(stats.dxPx), stats.dxMm == null ? null : Math.abs(stats.dxMm))} | Vertical ${formatInterpolatedMeasurement(Math.abs(stats.dyPx), stats.dyMm == null ? null : Math.abs(stats.dyMm))} | Length ${formatInterpolatedMeasurement(stats.lengthPx, stats.lengthMm)} | Computed from interpolated endpoints.`,
           active: true,
           warning: false,
         };
@@ -1096,7 +1308,7 @@
         const secondStats = computeMeasurementStats(second);
         const angleDegrees = computeSelectedMeasurementAngle(selectedMeasurements);
         return {
-          text: `Selected 2 lines | ${getMeasurementLabel(first, measurements)} Length ${formatMeasurementPair(firstStats.lengthPx, firstStats.lengthMm)} | ${getMeasurementLabel(second, measurements)} Length ${formatMeasurementPair(secondStats.lengthPx, secondStats.lengthMm)} | Angle ${formatMeasurementNumber(angleDegrees, 1)} deg`,
+          text: `Selected 2 lines | ${getMeasurementLabel(first, measurements)} Length ${formatInterpolatedMeasurement(firstStats.lengthPx, firstStats.lengthMm)} | ${getMeasurementLabel(second, measurements)} Length ${formatInterpolatedMeasurement(secondStats.lengthPx, secondStats.lengthMm)} | Angle ${formatMeasurementNumber(angleDegrees, 2)} deg`,
           active: true,
           warning: false,
         };
@@ -1112,7 +1324,7 @@
 
       if (measurements.length > 0) {
         return {
-          text: `This slice has ${measurements.length} measurements. Click a line to select it, or Ctrl/Cmd+click to multi-select.`,
+          text: `This slice has ${measurements.length} measurements. Click a line to select it, drag either endpoint to refine it, or Ctrl/Cmd+click to multi-select.`,
           active: true,
           warning: false,
         };
@@ -1748,6 +1960,174 @@
       fitCanvasDisplays();
     }
 
+    function isCompareViewSingleColumn() {
+      return window.innerWidth <= 900;
+    }
+
+    function getComparePanelMinWidths() {
+      return window.innerWidth <= 1280
+        ? COMPARE_PANEL_COMPACT_MIN_WIDTHS
+        : COMPARE_PANEL_MIN_WIDTHS;
+    }
+
+    function getCompareViewPanels() {
+      return [
+        elements.fundusViewPanel,
+        elements.bscanViewPanel,
+        elements.contourViewPanel,
+      ].filter(Boolean);
+    }
+
+    function getCompareViewPanelWidths() {
+      return getCompareViewPanels().map((panel) => panel.getBoundingClientRect().width);
+    }
+
+    function clearActiveViewResizers() {
+      elements.compareWidthResizers.forEach((handle) => handle.classList.remove("active"));
+      elements.stageHeightResizers.forEach((handle) => handle.classList.remove("active"));
+    }
+
+    function setCompareViewColumnWidths(widths) {
+      if (!elements.compareView || !Array.isArray(widths) || widths.length !== 3) {
+        return;
+      }
+      const totalWidth = widths.reduce((sum, width) => sum + Math.max(1, Number(width) || 0), 0);
+      if (!totalWidth) {
+        return;
+      }
+      widths.forEach((width, index) => {
+        const ratio = (Math.max(1, Number(width) || 0) / totalWidth) * 100;
+        elements.compareView.style.setProperty(`--compare-col-${index + 1}`, `${ratio.toFixed(4)}%`);
+      });
+      fitCanvasDisplays();
+    }
+
+    function applyPersistedCompareColumns(columns) {
+      const normalized = sanitizeCompareColumns(columns);
+      normalized.forEach((value, index) => {
+        elements.compareView?.style.setProperty(`--compare-col-${index + 1}`, `${value.toFixed(4)}%`);
+      });
+    }
+
+    function getStageHeightBounds() {
+      return {
+        minHeight: isCompareViewSingleColumn() ? MIN_STAGE_HEIGHT_COMPACT : MIN_STAGE_HEIGHT,
+        maxHeight: Math.max(320, Math.round(window.innerHeight * 0.85)),
+      };
+    }
+
+    function applyPersistedStageHeights(stageHeights) {
+      const normalized = sanitizeStageHeights(stageHeights);
+      const { minHeight, maxHeight } = getStageHeightBounds();
+      [
+        ["fundusStage", elements.fundusStage],
+        ["stage", elements.stage],
+        ["contourStage", elements.contourStage],
+      ].forEach(([key, stage]) => {
+        if (!stage) {
+          return;
+        }
+        const height = normalized[key];
+        if (height == null) {
+          stage.style.removeProperty("height");
+          return;
+        }
+        stage.style.height = `${Math.round(clampValue(height, minHeight, maxHeight))}px`;
+      });
+    }
+
+    function applyPersistedLayoutState(persisted = getUiState()) {
+      applyPersistedCompareColumns(persisted.compareColumns);
+      applyPersistedStageHeights(persisted.stageHeights);
+    }
+
+    function beginCompareViewWidthResize(handleIndex, handleElement, event) {
+      if (event.button !== 0 || isCompareViewSingleColumn()) {
+        return;
+      }
+      const widths = getCompareViewPanelWidths();
+      if (widths.length !== 3) {
+        return;
+      }
+      state.layoutResize = {
+        type: "width",
+        handleIndex,
+        startX: event.clientX,
+        widths,
+      };
+      clearActiveViewResizers();
+      handleElement?.classList.add("active");
+      document.body.classList.add("is-resizing", "is-resizing-col");
+      event.preventDefault();
+    }
+
+    function beginCompareViewHeightResize(stageId, handleElement, event) {
+      if (event.button !== 0) {
+        return;
+      }
+      const stage = document.getElementById(stageId);
+      if (!stage) {
+        return;
+      }
+      state.layoutResize = {
+        type: "height",
+        stageId,
+        startY: event.clientY,
+        startHeight: stage.getBoundingClientRect().height,
+        minHeight: isCompareViewSingleColumn() ? MIN_STAGE_HEIGHT_COMPACT : MIN_STAGE_HEIGHT,
+        maxHeight: Math.max(320, Math.round(window.innerHeight * 0.85)),
+      };
+      clearActiveViewResizers();
+      handleElement?.classList.add("active");
+      document.body.classList.add("is-resizing", "is-resizing-row");
+      event.preventDefault();
+    }
+
+    function updateCompareViewResize(event) {
+      if (!state.layoutResize) {
+        return;
+      }
+      if (state.layoutResize.type === "width") {
+        const deltaX = event.clientX - state.layoutResize.startX;
+        const widths = [...state.layoutResize.widths];
+        const minWidths = getComparePanelMinWidths();
+        if (state.layoutResize.handleIndex === 0) {
+          const combinedWidth = widths[0] + widths[1];
+          widths[0] = clampValue(widths[0] + deltaX, minWidths[0], combinedWidth - minWidths[1]);
+          widths[1] = combinedWidth - widths[0];
+        } else {
+          const combinedWidth = widths[1] + widths[2];
+          widths[1] = clampValue(widths[1] + deltaX, minWidths[1], combinedWidth - minWidths[2]);
+          widths[2] = combinedWidth - widths[1];
+        }
+        setCompareViewColumnWidths(widths);
+        return;
+      }
+
+      const stage = document.getElementById(state.layoutResize.stageId);
+      if (!stage) {
+        return;
+      }
+      const deltaY = event.clientY - state.layoutResize.startY;
+      const nextHeight = clampValue(
+        state.layoutResize.startHeight + deltaY,
+        state.layoutResize.minHeight,
+        state.layoutResize.maxHeight,
+      );
+      stage.style.height = `${Math.round(nextHeight)}px`;
+      fitCanvasDisplays();
+    }
+
+    function finishCompareViewResize() {
+      if (!state.layoutResize) {
+        return;
+      }
+      state.layoutResize = null;
+      clearActiveViewResizers();
+      document.body.classList.remove("is-resizing", "is-resizing-col", "is-resizing-row");
+      saveUiState();
+    }
+
     async function loadDrawable(url, fallbackWidth, fallbackHeight, errorPrefix) {
       const response = await fetch(url, { cache: "no-store" });
       if (!response.ok) {
@@ -1944,18 +2324,36 @@
       fundusCtx.restore();
     }
 
-    function pointToCanvas(event, canvas, { clamp = false } = {}) {
+    function getCanvasCoordinateMetrics(canvas) {
       const rect = canvas.getBoundingClientRect();
+      const maxX = Math.max(0, canvas.width || 1);
+      const maxY = Math.max(0, canvas.height || 1);
+      const scaleX = rect.width ? Math.max(1, maxX || 1) / rect.width : 1;
+      const scaleY = rect.height ? Math.max(1, maxY || 1) / rect.height : 1;
+      return {
+        rect,
+        maxX,
+        maxY,
+        scaleX,
+        scaleY,
+        maxScale: Math.max(scaleX, scaleY),
+      };
+    }
+
+    function pointToCanvas(event, canvas, { clamp = false } = {}) {
+      const { rect, maxX, maxY } = getCanvasCoordinateMetrics(canvas);
       if (!rect.width || !rect.height) return null;
-      const x = ((event.clientX - rect.left) / rect.width) * canvas.width;
-      const y = ((event.clientY - rect.top) / rect.height) * canvas.height;
+      const xRatio = (event.clientX - rect.left) / rect.width;
+      const yRatio = (event.clientY - rect.top) / rect.height;
+      const x = xRatio * maxX;
+      const y = yRatio * maxY;
       if (clamp) {
         return [
-          Math.max(0, Math.min(canvas.width, x)),
-          Math.max(0, Math.min(canvas.height, y)),
+          Math.max(0, Math.min(maxX, x)),
+          Math.max(0, Math.min(maxY, y)),
         ];
       }
-      if (x < 0 || y < 0 || x > canvas.width || y > canvas.height) {
+      if (xRatio < 0 || yRatio < 0 || xRatio > 1 || yRatio > 1) {
         return null;
       }
       return [x, y];
@@ -1987,20 +2385,21 @@
     }
 
     function getMeasurementHitTolerance() {
-      const rect = elements.measurementCanvas.getBoundingClientRect();
+      const { rect, maxScale } = getCanvasCoordinateMetrics(elements.measurementCanvas);
       if (!rect.width || !rect.height) {
-        return 10;
+        return MEASUREMENT_LINE_HIT_CSS_PX;
       }
-      const scaleX = elements.measurementCanvas.width / rect.width;
-      const scaleY = elements.measurementCanvas.height / rect.height;
-      return 10 * Math.max(scaleX, scaleY);
+      return MEASUREMENT_LINE_HIT_CSS_PX * maxScale;
     }
 
     function findMeasurementAtPoint(point, measurements = getCurrentMeasurements()) {
       const tolerance = getMeasurementHitTolerance();
       let matched = null;
       let bestDistance = Number.POSITIVE_INFINITY;
-      measurements.forEach((measurement) => {
+      const orderedMeasurements = [...measurements].sort(
+        (first, second) => Number(isMeasurementSelected(second.id)) - Number(isMeasurementSelected(first.id)),
+      );
+      orderedMeasurements.forEach((measurement) => {
         const distance = distanceToSegment(point, measurement);
         if (distance <= tolerance && distance < bestDistance) {
           matched = measurement;
@@ -2014,14 +2413,13 @@
       return Math.hypot(Number(first[0]) - Number(second[0]), Number(first[1]) - Number(second[1]));
     }
 
-    function getMeasurementHandleHitTolerance() {
-      const rect = elements.measurementCanvas.getBoundingClientRect();
+    function getMeasurementHandleHitTolerance(isSelected = false) {
+      const { rect, maxScale } = getCanvasCoordinateMetrics(elements.measurementCanvas);
+      const cssTolerance = isSelected ? MEASUREMENT_SELECTED_HANDLE_HIT_CSS_PX : MEASUREMENT_HANDLE_HIT_CSS_PX;
       if (!rect.width || !rect.height) {
-        return 12;
+        return cssTolerance;
       }
-      const scaleX = elements.measurementCanvas.width / rect.width;
-      const scaleY = elements.measurementCanvas.height / rect.height;
-      return 12 * Math.max(scaleX, scaleY);
+      return cssTolerance * maxScale;
     }
 
     function getMeasurementHandleKey(measurementId, endpointKey) {
@@ -2029,10 +2427,13 @@
     }
 
     function findMeasurementHandleAtPoint(point, measurements = getCurrentMeasurements()) {
-      const tolerance = getMeasurementHandleHitTolerance();
       let matched = null;
       let bestDistance = Number.POSITIVE_INFINITY;
-      measurements.forEach((measurement) => {
+      const orderedMeasurements = [...measurements].sort(
+        (first, second) => Number(isMeasurementSelected(second.id)) - Number(isMeasurementSelected(first.id)),
+      );
+      orderedMeasurements.forEach((measurement) => {
+        const tolerance = getMeasurementHandleHitTolerance(isMeasurementSelected(measurement.id));
         ["start", "end"].forEach((endpointKey) => {
           const endpoint = measurement?.[endpointKey];
           if (!Array.isArray(endpoint) || endpoint.length < 2) {
@@ -2057,9 +2458,10 @@
     }
 
     function clampCanvasPoint(point, canvas = elements.measurementCanvas) {
+      const { maxX, maxY } = getCanvasCoordinateMetrics(canvas);
       return [
-        Math.max(0, Math.min(canvas.width, Number(point[0]))),
-        Math.max(0, Math.min(canvas.height, Number(point[1]))),
+        Math.max(0, Math.min(maxX, Number(point[0]))),
+        Math.max(0, Math.min(maxY, Number(point[1]))),
       ];
     }
 
@@ -2074,21 +2476,57 @@
       if (state.measurementHoverHandle) {
         return "grab";
       }
+      if (state.measurementHoverPoint && findMeasurementAtPoint(state.measurementHoverPoint)) {
+        return "pointer";
+      }
       return "crosshair";
     }
 
     function drawMeasurementLabel(measurement, label, isSelected) {
       const start = measurement.start;
       const end = measurement.end;
-      const labelX = (Number(start[0]) + Number(end[0])) / 2;
-      const labelY = (Number(start[1]) + Number(end[1])) / 2;
+      const startX = Number(start[0]);
+      const startY = Number(start[1]);
+      const endX = Number(end[0]);
+      const endY = Number(end[1]);
+      const labelX = (startX + endX) / 2;
+      const labelY = (startY + endY) / 2;
+      const deltaX = endX - startX;
+      const deltaY = endY - startY;
+      const length = Math.max(1, Math.hypot(deltaX, deltaY));
+      const normalX = -deltaY / length;
+      const normalY = deltaX / length;
+      const offset = isSelected ? 18 : 14;
+      const textX = labelX + (normalX * offset);
+      const textY = labelY + (normalY * offset);
       measurementCtx.save();
-      measurementCtx.font = `${Math.max(12, Math.round(elements.measurementCanvas.height / 32))}px "Segoe UI", sans-serif`;
+      const fontSize = Math.max(12, Math.round(elements.measurementCanvas.height / 32));
+      measurementCtx.font = `${fontSize}px "Segoe UI", sans-serif`;
+      measurementCtx.textBaseline = "middle";
+      const metrics = measurementCtx.measureText(label);
+      const paddingX = 8;
+      const paddingY = 5;
+      const textWidth = Math.ceil(metrics.width);
+      const boxHeight = fontSize + (paddingY * 2);
+      const boxWidth = textWidth + (paddingX * 2);
+      const boxX = textX - (boxWidth / 2);
+      const boxY = textY - (boxHeight / 2);
+      measurementCtx.fillStyle = isSelected ? "rgba(249, 115, 22, 0.2)" : "rgba(15, 23, 42, 0.78)";
+      measurementCtx.strokeStyle = isSelected ? "rgba(249, 115, 22, 0.6)" : "rgba(148, 163, 184, 0.35)";
+      measurementCtx.lineWidth = 1.25;
+      measurementCtx.beginPath();
+      if (typeof measurementCtx.roundRect === "function") {
+        measurementCtx.roundRect(boxX, boxY, boxWidth, boxHeight, 8);
+      } else {
+        measurementCtx.rect(boxX, boxY, boxWidth, boxHeight);
+      }
+      measurementCtx.fill();
+      measurementCtx.stroke();
       measurementCtx.fillStyle = isSelected ? "#f8fafc" : "#e2e8f0";
       measurementCtx.strokeStyle = "rgba(2, 6, 23, 0.82)";
       measurementCtx.lineWidth = 4;
-      measurementCtx.strokeText(label, labelX + 10, labelY - 10);
-      measurementCtx.fillText(label, labelX + 10, labelY - 10);
+      measurementCtx.strokeText(label, textX - (textWidth / 2), textY);
+      measurementCtx.fillText(label, textX - (textWidth / 2), textY);
       measurementCtx.restore();
     }
 
@@ -2115,18 +2553,24 @@
         measurementCtx.stroke();
         [["start", measurement.start], ["end", measurement.end]].forEach(([endpointKey, point]) => {
           const isActiveHandle = activeHandleKey === getMeasurementHandleKey(measurement.id, endpointKey);
+          const radius = isActiveHandle
+            ? MEASUREMENT_ACTIVE_HANDLE_RADIUS
+            : (isSelected ? MEASUREMENT_SELECTED_HANDLE_RADIUS : MEASUREMENT_HANDLE_RADIUS);
           measurementCtx.beginPath();
           measurementCtx.arc(
             Number(point[0]),
             Number(point[1]),
-            isActiveHandle ? 6 : (isSelected ? 4.5 : 3.5),
+            radius,
             0,
             Math.PI * 2,
           );
           measurementCtx.fill();
+          measurementCtx.lineWidth = isActiveHandle ? 2 : 1.5;
+          measurementCtx.strokeStyle = isActiveHandle ? "#fff7ed" : "rgba(15, 23, 42, 0.9)";
+          measurementCtx.stroke();
         });
         measurementCtx.restore();
-        drawMeasurementLabel(measurement, getMeasurementLabel(measurement, measurements), isSelected);
+        drawMeasurementLabel(measurement, getMeasurementOverlayLabel(measurement, measurements), isSelected);
       });
 
       if (state.measurementMode && state.measurementDraftStart && state.measurementHoverPoint) {
@@ -2181,6 +2625,7 @@
       state.selectedMeasurementIds = new Set([measurement.id]);
       state.measurementDraftStart = null;
       state.measurementHoverPoint = null;
+      state.measurementPointerDownPoint = null;
       updateLabels();
       drawMeasurementOverlay();
     }
@@ -2214,6 +2659,7 @@
         return;
       }
       state.measurementDrag = null;
+      state.measurementPointerDownPoint = null;
       state.measurementSuppressClick = true;
       renderMeasurementControls();
       drawMeasurementOverlay();
@@ -2221,7 +2667,7 @@
 
     function handleMeasurementCanvasMouseDown(event) {
       const volume = currentVolume();
-      if (!volume || !state.measurementMode) {
+      if (!volume || !state.measurementMode || event.button !== 0) {
         return;
       }
       const point = pointToCanvas(event, elements.measurementCanvas);
@@ -2231,6 +2677,7 @@
       const handle = findMeasurementHandleAtPoint(point);
       state.measurementHoverPoint = point;
       state.measurementHoverHandle = handle?.handleKey || null;
+      state.measurementPointerDownPoint = handle ? null : point;
       renderMeasurementControls();
       if (!handle) {
         return;
@@ -2253,12 +2700,14 @@
       }
       if (state.measurementSuppressClick) {
         state.measurementSuppressClick = false;
+        state.measurementPointerDownPoint = null;
         return;
       }
       if (state.measurementDrag) {
         return;
       }
-      const point = pointToCanvas(event, elements.measurementCanvas);
+      const point = state.measurementPointerDownPoint || pointToCanvas(event, elements.measurementCanvas);
+      state.measurementPointerDownPoint = null;
       if (!point) {
         return;
       }
@@ -2314,6 +2763,7 @@
       if (state.measurementDrag) {
         return;
       }
+      state.measurementPointerDownPoint = null;
       state.measurementHoverPoint = null;
       state.measurementHoverHandle = null;
       renderMeasurementControls();
@@ -2728,10 +3178,12 @@
       if (!elements.pathInput.value) {
         elements.pathInput.value = persisted.lastPath || "";
       }
+      applyPersistedLayoutState(persisted);
       syncVendorModeButtons();
       syncOverlayDisplayButtons();
       updateLabels();
       updateViewInfo();
+      fitCanvasDisplays();
     }
 
     async function pickLocalFile() {
@@ -2882,8 +3334,21 @@
     elements.measurementCanvas.addEventListener("click", handleMeasurementCanvasClick);
     elements.measurementCanvas.addEventListener("mousemove", handleMeasurementCanvasMouseMove);
     elements.measurementCanvas.addEventListener("mouseleave", handleMeasurementCanvasMouseLeave);
+    elements.compareWidthResizers.forEach((handle) => {
+      handle.addEventListener("mousedown", (event) => {
+        beginCompareViewWidthResize(Number(handle.dataset.resizeIndex || 0), handle, event);
+      });
+    });
+    elements.stageHeightResizers.forEach((handle) => {
+      handle.addEventListener("mousedown", (event) => {
+        beginCompareViewHeightResize(handle.dataset.stageTarget || "", handle, event);
+      });
+    });
     window.addEventListener("mousemove", handleMeasurementWindowMouseMove);
     window.addEventListener("mouseup", handleMeasurementWindowMouseUp);
+    window.addEventListener("mousemove", updateCompareViewResize);
+    window.addEventListener("mouseup", finishCompareViewResize);
+    window.addEventListener("blur", finishCompareViewResize);
     elements.fundusStage.addEventListener("click", selectSliceFromFundus);
     elements.fundusStage.addEventListener("wheel", (event) => {
       if (!currentVolume()) return;
@@ -2923,3 +3388,4 @@
   </script>
 </body>
 </html>
+
