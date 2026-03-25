@@ -71,6 +71,24 @@ python scripts/fa_qt_viewer.py /path/to/file.e2e --vendor hdb
 The viewer auto-detects `Topcon` folders (`DATAFILE` + `IM*.JPG`), `Zeiss` DICOM datasets, and
 `HDB / Heidelberg` `.E2E` files, and uses a single workflow for all supported FA vendors.
 
+### Unified FA web viewer
+
+There is also a local web viewer for the same FA datasets:
+
+```bash
+python web_viewer/fa_web_viewer.py
+python web_viewer/fa_web_viewer.py /path/to/fa_dataset --vendor auto
+python web_viewer/fa_web_viewer.py /path/to/file.e2e --vendor hdb
+```
+
+It starts a local web page with a Zeiss-style layout and supports:
+
+- Topcon FA folders
+- Zeiss DICOM folders/files
+- HDB / Heidelberg `.E2E` files
+- local file or directory picking from the browser
+- frame table, filtering, playback, contrast/brightness, and metadata inspection
+
 Here is an example of reading a .fds file:
 
 ```python

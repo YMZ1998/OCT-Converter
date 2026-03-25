@@ -414,88 +414,88 @@
     <div class="topbar">
       <div class="title"><span class="dot"></span> OCT Web Viewer</div>
       <div class="pathbar">
-        <input id="pathInput" class="grow" type="text" placeholder="输入 OCT 文件路径，例如 D:\data\sample.e2e">
-        <button id="browseButton" class="secondary">选择文件</button>
-        <button id="loadButton">加载文件</button>
+        <input id="pathInput" class="grow" type="text" placeholder="Enter OCT file path, e.g. D:\data\sample.e2e">
+        <button id="browseButton" class="secondary">Browse</button>
+        <button id="loadButton">Load</button>
         <input id="fileInput" type="file" accept=".fds,.FDS,.fda,.FDA,.e2e,.E2E,.img,.IMG,.oct,.OCT,.dcm,.DCM,.dicom,.DICOM" hidden>
-        <button id="refreshButton" class="secondary">刷新状态</button>
-        <button id="resetViewButton" class="secondary">重置视图</button>
+        <button id="refreshButton" class="secondary">Refresh State</button>
+        <button id="resetViewButton" class="secondary">Reset View</button>
       </div>
       <div class="modebar">
-        <div class="modebar-label">加载模式</div>
+        <div class="modebar-label">Load Mode</div>
         <div class="segmented" id="vendorModeGroup">
-          <button type="button" class="secondary mode-button active" data-vendor-mode="auto">自动识别</button>
-          <button type="button" class="secondary mode-button" data-vendor-mode="heidelberg">海德堡 E2E</button>
-          <button type="button" class="secondary mode-button" data-vendor-mode="topcon">拓普康 FDA/FDS</button>
+          <button type="button" class="secondary mode-button active" data-vendor-mode="auto">Auto Detect</button>
+          <button type="button" class="secondary mode-button" data-vendor-mode="heidelberg">Heidelberg E2E</button>
+          <button type="button" class="secondary mode-button" data-vendor-mode="topcon">Topcon FDA/FDS</button>
           <button type="button" class="secondary mode-button" data-vendor-mode="tupai">Tupai DICOM</button>
-          <button type="button" class="secondary mode-button" data-vendor-mode="shiwei">视微</button>
+          <button type="button" class="secondary mode-button" data-vendor-mode="shiwei">Shiwei</button>
         </div>
       </div>
-      <div id="status" class="status">等待加载 OCT 文件。</div>
+      <div id="status" class="status">Waiting for an OCT file.</div>
     </div>
 
     <div class="layout">
       <section class="panel">
-        <div class="panel-header">数据概览</div>
+        <div class="panel-header">Data Overview</div>
         <div class="panel-body">
           <div class="kv">
             <div>Reader</div><div id="readerValue">-</div>
-            <div>文件路径</div><div id="pathValue">-</div>
-            <div>Volume 数</div><div id="volumeCountValue">0</div>
-            <div>Fundus 数</div><div id="fundusCountValue">0</div>
+            <div>File Path</div><div id="pathValue">-</div>
+            <div>Volume Count</div><div id="volumeCountValue">0</div>
+            <div>Fundus Count</div><div id="fundusCountValue">0</div>
           </div>
           <div class="control">
-            <label for="recentSelect">最近文件</label>
+            <label for="recentSelect">Recent Files</label>
             <select id="recentSelect">
-              <option value="">暂无历史记录</option>
+              <option value="">No recent files</option>
             </select>
           </div>
           <div class="control">
-            <label for="volumeSelect">选择 Volume</label>
+            <label for="volumeSelect">Select Volume</label>
             <select id="volumeSelect"></select>
           </div>
           <div class="control">
-            <label for="fundusSelect">选择 Fundus</label>
+            <label for="fundusSelect">Select Fundus</label>
             <select id="fundusSelect"></select>
           </div>
-          <div class="pill" id="volumeBadge">未加载</div>
-          <div class="hint">支持滚轮切片、方向键切片、空格播放。</div>
+          <div class="pill" id="volumeBadge">Not Loaded</div>
+          <div class="hint">Supports wheel-based slice navigation, arrow-key slice navigation, and spacebar playback.</div>
         </div>
       </section>
 
       <section class="panel">
-        <div class="panel-header">OCT 切片查看</div>
+        <div class="panel-header">OCT Slice Viewer</div>
         <div class="panel-body">
           <div class="viewer-wrap">
             <div class="viewer-toolbar">
               <div class="control">
-                <label for="sliceSlider">切片</label>
+                <label for="sliceSlider">Slice</label>
                 <input id="sliceSlider" type="range" min="0" max="0" value="0">
                 <div id="sliceLabel" class="hint">Slice 0 / 0</div>
               </div>
               <div class="control">
-                <label>定位显示</label>
+                <label>Overlay Display</label>
                 <div class="segmented" id="overlayDisplayGroup">
-                  <button id="overlayBoxButton" type="button" class="secondary mode-button active" data-overlay-display="box">扫描框</button>
-                  <button id="overlayLineButton" type="button" class="secondary mode-button" data-overlay-display="line">定位线</button>
+                  <button id="overlayBoxButton" type="button" class="secondary mode-button active" data-overlay-display="box">Scan Box</button>
+                  <button id="overlayLineButton" type="button" class="secondary mode-button" data-overlay-display="line">Localizer Line</button>
                 </div>
               </div>
               <div class="viewer-controls">
-                <button id="prevButton" class="secondary">上一张</button>
-                <button id="playButton" class="secondary">播放</button>
-                <button id="nextButton" class="secondary">下一张</button>
-                <button id="zoomOutButton" class="secondary">缩小</button>
+                <button id="prevButton" class="secondary">Prev</button>
+                <button id="playButton" class="secondary">Play</button>
+                <button id="nextButton" class="secondary">Next</button>
+                <button id="zoomOutButton" class="secondary">Zoom Out</button>
                 <button id="zoomResetButton" class="secondary">100%</button>
-                <button id="zoomInButton" class="secondary">放大</button>
-                <button id="overlayButton" class="secondary">轮廓开</button>
-                <button id="infoButton" class="secondary" hidden>提示开</button>
+                <button id="zoomInButton" class="secondary">Zoom In</button>
+                <button id="overlayButton" class="secondary">Contours On</button>
+                <button id="infoButton" class="secondary" hidden>Hints On</button>
               </div>
             </div>
 
             <div class="compare-view">
               <div class="view-panel">
-                <div class="view-title" id="fundusViewTitle">定位图 / Fundus</div>
-                <div class="hint view-hint" id="fundusViewHint">左侧显示定位图，点击定位线可跳转到对应切片。</div>
+                <div class="view-title" id="fundusViewTitle">Fundus / Localizer</div>
+                <div class="hint view-hint" id="fundusViewHint">Click a localizer line to jump to the matching B-scan.</div>
                 <div class="canvas-stage" id="fundusStage">
                   <canvas id="fundusCanvas" width="1024" height="1024"></canvas>
                   <div id="fundusEmptyState" class="empty"></div>
@@ -503,13 +503,13 @@
               </div>
 
               <div class="view-panel">
-                <div class="view-title" id="bscanViewTitle">当前 B-Scan</div>
-                <div class="hint view-hint" id="bscanViewHint">右侧显示与左侧定位线匹配的当前切片。</div>
+                <div class="view-title" id="bscanViewTitle">Current B-Scan</div>
+                <div class="hint view-hint" id="bscanViewHint">The right panel shows the current B-scan matched to the selected localizer line.</div>
                 <div class="measurement-toolbar">
-                  <button id="measurementModeButton" type="button" class="secondary">测量关</button>
-                  <button id="measurementDeleteButton" type="button" class="secondary">删除选中</button>
-                  <button id="measurementClearButton" type="button" class="secondary">清空当前切片</button>
-                  <div id="measurementReadout" class="measurement-readout">开启测量后可在 B-scan 上点击两点创建线段。</div>
+                  <button id="measurementModeButton" type="button" class="secondary">Measurement Off</button>
+                  <button id="measurementDeleteButton" type="button" class="secondary">Delete Selected</button>
+                  <button id="measurementClearButton" type="button" class="secondary">Clear Slice</button>
+                  <div id="measurementReadout" class="measurement-readout">Enable measurement mode, then click two points on the B-scan to create a line.</div>
                 </div>
                 <div class="canvas-stage" id="stage">
                   <div id="bscanCanvasStack" class="stage-stack">
@@ -521,7 +521,7 @@
               </div>
 
               <div class="view-panel">
-                <div class="view-title">轮廓图层</div>
+                <div class="view-title">Contour Layers</div>
                 <div class="canvas-stage contour-stage">
                   <div class="contour-panel-body">
                     <div class="contour-actions">
@@ -537,17 +537,17 @@
 
             <div class="viewer-controls viewer-settings">
               <div class="control">
-                <label for="contrastSlider">对比度</label>
+                <label for="contrastSlider">Contrast</label>
                 <input id="contrastSlider" type="range" min="50" max="300" value="100">
                 <div id="contrastLabel" class="hint">100%</div>
               </div>
               <div class="control">
-                <label for="brightnessSlider">亮度</label>
+                <label for="brightnessSlider">Brightness</label>
                 <input id="brightnessSlider" type="range" min="-100" max="100" value="0">
                 <div id="brightnessLabel" class="hint">0</div>
               </div>
               <div class="control">
-                <label for="speedSlider">播放速度</label>
+                <label for="speedSlider">Playback Speed</label>
                 <input id="speedSlider" type="range" min="1" max="12" value="5">
                 <div id="speedLabel" class="hint">5 FPS</div>
               </div>
@@ -557,7 +557,7 @@
       </section>
 
       <section class="panel side-right">
-        <div class="panel-header">投影与眼底</div>
+        <div class="panel-header">Projection & Fundus</div>
         <div class="panel-body">
           <div class="control">
             <label>Projection</label>
@@ -693,33 +693,33 @@
 
     const VENDOR_MODE_CONFIG = {
       auto: {
-        label: "自动识别",
+        label: "Auto Detect",
         accept: ".fds,.FDS,.fda,.FDA,.e2e,.E2E,.img,.IMG,.oct,.OCT,.dcm,.DCM,.dicom,.DICOM",
-        pathHint: "输入 OCT 文件路径，例如 D:\\data\\sample.e2e",
+        pathHint: "Enter OCT file path, e.g. D:\data\sample.e2e",
         allowUpload: true,
       },
       heidelberg: {
-        label: "海德堡 E2E",
+        label: "Heidelberg E2E",
         accept: ".e2e,.E2E",
-        pathHint: "输入海德堡 E2E 文件路径，例如 D:\\data\\sample.e2e",
+        pathHint: "Enter Heidelberg E2E file path, e.g. D:\data\sample.e2e",
         allowUpload: true,
       },
       topcon: {
-        label: "拓普康 FDA/FDS",
+        label: "Topcon FDA/FDS",
         accept: ".fda,.FDA,.fds,.FDS",
-        pathHint: "输入拓普康 FDA/FDS 文件路径，例如 D:\\data\\sample.fda",
+        pathHint: "Enter Topcon FDA/FDS file path, e.g. D:\data\sample.fda",
         allowUpload: true,
       },
       tupai: {
         label: "Tupai DICOM",
         accept: ".dcm,.DCM,.dicom,.DICOM",
-        pathHint: "输入包含 OCT.dcm 和 Fundus.dcm 的目录、其中任一 DICOM 文件路径，或可唯一定位数据集的上级目录",
+        pathHint: "Enter a directory containing OCT.dcm and Fundus.dcm, any DICOM path inside that dataset, or a uniquely resolvable parent directory.",
         allowUpload: false,
       },
       shiwei: {
-        label: "视微",
+        label: "Shiwei",
         accept: ".dcm,.DCM,.dicom,.DICOM",
-        pathHint: "输入视微 DICOM 目录、该目录中的任一配套 DICOM 文件路径，或可唯一定位数据集的上级目录",
+        pathHint: "Enter a Shiwei DICOM directory, any DICOM path inside that dataset, or a uniquely resolvable parent directory.",
         allowUpload: false,
       },
     };
@@ -843,7 +843,7 @@
         button.classList.toggle("active", button.dataset.vendorMode === state.vendorMode);
       });
       elements.pathInput.placeholder = vendorConfig.pathHint;
-      elements.browseButton.textContent = usesDirectoryPicker(state.vendorMode) ? "选择目录" : "选择文件";
+      elements.browseButton.textContent = usesDirectoryPicker(state.vendorMode) ? "Browse Folder" : "Browse File";
       elements.fileInput.accept = vendorConfig.accept;
       elements.fileInput.value = "";
     }
@@ -1083,7 +1083,7 @@
         const measurement = selectedMeasurements[0];
         const stats = computeMeasurementStats(measurement);
         return {
-          text: `Selected ${getMeasurementLabel(measurement, measurements)} | ?x ${formatMeasurementPair(Math.abs(stats.dxPx), stats.dxMm == null ? null : Math.abs(stats.dxMm))} ? ?y ${formatMeasurementPair(Math.abs(stats.dyPx), stats.dyMm == null ? null : Math.abs(stats.dyMm))} ? Length ${formatMeasurementPair(stats.lengthPx, stats.lengthMm)}` ,
+          text: `Selected ${getMeasurementLabel(measurement, measurements)} | dx ${formatMeasurementPair(Math.abs(stats.dxPx), stats.dxMm == null ? null : Math.abs(stats.dxMm))} | dy ${formatMeasurementPair(Math.abs(stats.dyPx), stats.dyMm == null ? null : Math.abs(stats.dyMm))} | Length ${formatMeasurementPair(stats.lengthPx, stats.lengthMm)}`,
           active: true,
           warning: false,
         };
@@ -1096,7 +1096,7 @@
         const secondStats = computeMeasurementStats(second);
         const angleDegrees = computeSelectedMeasurementAngle(selectedMeasurements);
         return {
-          text: `Selected 2 lines | ${getMeasurementLabel(first, measurements)} Length ${formatMeasurementPair(firstStats.lengthPx, firstStats.lengthMm)} ? ${getMeasurementLabel(second, measurements)} Length ${formatMeasurementPair(secondStats.lengthPx, secondStats.lengthMm)} ? Angle ${formatMeasurementNumber(angleDegrees, 1)}?`,
+          text: `Selected 2 lines | ${getMeasurementLabel(first, measurements)} Length ${formatMeasurementPair(firstStats.lengthPx, firstStats.lengthMm)} | ${getMeasurementLabel(second, measurements)} Length ${formatMeasurementPair(secondStats.lengthPx, secondStats.lengthMm)} | Angle ${formatMeasurementNumber(angleDegrees, 1)} deg`,
           active: true,
           warning: false,
         };
@@ -1201,11 +1201,11 @@
 
       if (!contourNames.length) {
         elements.contourNames.textContent = "None";
-        elements.contourLayerList.innerHTML = `<div class="contour-layer-empty">当前切片无可用轮廓图层</div>`;
+        elements.contourLayerList.innerHTML = `<div class="contour-layer-empty">No contour layers available for the current slice.</div>`;
         return;
       }
 
-      elements.contourNames.textContent = `${visibleNames.length} / ${contourNames.length} 个图层已显示`;
+      elements.contourNames.textContent = `${visibleNames.length} / ${contourNames.length} layers visible`;
       const visibility = ensureContourVisibilityState(volume);
       if (elements.contourSelectAllButton) {
         elements.contourSelectAllButton.disabled = visibleNames.length === contourNames.length;
@@ -1248,7 +1248,7 @@
       }
       state.playbackGeneration += 1;
       state.playing = false;
-      elements.playButton.textContent = "播放";
+      elements.playButton.textContent = "Play";
     }
 
     function updateLabels() {
@@ -1273,11 +1273,11 @@
 
       elements.volumeSelect.innerHTML = volumes.length
         ? volumes.map((item, index) => `<option value="${index}">${item.label}</option>`).join("")
-        : `<option value="0">无 Volume</option>`;
+        : `<option value="0">No Volume</option>`;
 
       elements.fundusSelect.innerHTML = fundusImages.length
         ? fundusImages.map((item, index) => `<option value="${index}">${item.label}</option>`).join("")
-        : `<option value="0">无 Fundus</option>`;
+        : `<option value="0">No Fundus</option>`;
 
       elements.volumeSelect.value = String(Math.min(state.volumeIndex, Math.max(0, volumes.length - 1)));
       elements.fundusSelect.value = String(Math.min(state.fundusIndex, Math.max(0, fundusImages.length - 1)));
@@ -1289,9 +1289,9 @@
       elements.fundusViewHint.style.display = hintDisplay;
       elements.bscanViewHint.style.display = hintDisplay;
       if (!volume) {
-        elements.fundusViewTitle.textContent = "定位图 / Fundus";
+        elements.fundusViewTitle.textContent = "Fundus / Localizer";
         elements.fundusViewHint.textContent = "The left panel shows the fundus/localizer. Click a scan line to jump to the matching slice.";
-        elements.bscanViewTitle.textContent = "当前 B-Scan";
+        elements.bscanViewTitle.textContent = "Current B-Scan";
         elements.bscanViewHint.textContent = "The right panel shows the current B-scan matched to the selected localizer line.";
         return;
       }
@@ -1302,7 +1302,7 @@
       const currentSegment = Array.isArray(volume.overlaySegments) ? volume.overlaySegments[state.sliceIndex] : null;
       const directionLabel = getSegmentDirectionLabel(currentSegment);
 
-      elements.fundusViewTitle.textContent = volume.matchedFundusLabel || "定位图 / Fundus";
+      elements.fundusViewTitle.textContent = volume.matchedFundusLabel || "Fundus / Localizer";
 
       if (volume.overlayWarning) {
         elements.fundusViewHint.textContent = volume.overlayWarning;
@@ -1318,17 +1318,17 @@
         elements.fundusViewHint.textContent = `Current localizer line: ${sliceNumber} / ${Math.max(segmentCount, volume.sliceCount)}. Click the fundus view to jump quickly.`;
       }
 
-      elements.bscanViewTitle.textContent = volume.label || "当前 B-Scan";
+      elements.bscanViewTitle.textContent = volume.label || "Current B-Scan";
       elements.bscanViewHint.textContent = displayMode === "box"
-        ? `当前红线对应的 B-scan：${sliceNumber} / ${volume.sliceCount}`
+        ? `The red line corresponds to B-scan ${sliceNumber} / ${volume.sliceCount}.`
         : `Slice ${sliceNumber} / ${volume.sliceCount}`;
     }
 
     function getSegmentDirectionLabel(segment) {
       const angle = Math.abs(Number(segment?.angleDegrees ?? 0)) % 180;
-      if (angle <= 15 || angle >= 165) return "水平";
-      if (Math.abs(angle - 90) <= 15) return "垂直";
-      return "斜向";
+      if (angle <= 15 || angle >= 165) return "horizontal";
+      if (Math.abs(angle - 90) <= 15) return "vertical";
+      return "oblique";
     }
 
     function getOverlayDisplayMode(volume) {
@@ -2427,7 +2427,7 @@
             `/api/volume/${state.volumeIndex}/fundus-view.png?ts=${Date.now()}`,
             state.fundusNaturalWidth || 1024,
             state.fundusNaturalHeight || 1024,
-            "切片图像加载失败",
+            "Failed to load fundus image",
           );
           if (token !== state.renderToken) return;
 
@@ -2483,7 +2483,7 @@
           `${buildSliceUrl()}&ts=${Date.now()}`,
           volume.width,
           volume.height,
-          "切片图像加载失败",
+          "Failed to load B-scan image",
         );
         if (token !== state.renderToken) return;
 
@@ -2600,7 +2600,7 @@
       saveUiState();
       renderState();
       scheduleDraw();
-      setStatus(`已加载：${payload.sourcePath}`);
+      setStatus(`Loaded: ${payload.sourcePath}`);
     }
 
     async function loadPath() {
@@ -2609,7 +2609,7 @@
         setStatus("Please enter an OCT file path first.", true);
         return;
       }
-      setBusy(true, `正在以“${getVendorModeLabel(state.vendorMode)}”模式读取数据，请稍候...`);
+      setBusy(true, `Loading data in "${getVendorModeLabel(state.vendorMode)}" mode...`);
       try {
         const payload = await fetchJson(
           `/api/load?path=${encodeURIComponent(filepath)}&vendor=${encodeURIComponent(state.vendorMode)}`,
@@ -2634,7 +2634,7 @@
 
       const formData = new FormData();
       formData.append("file", file, file.name);
-      setBusy(true, `正在上传文件：${file.name}`);
+      setBusy(true, `Uploading file: ${file.name}`);
       try {
         const payload = await fetchJson(`/api/upload?vendor=${encodeURIComponent(state.vendorMode)}`, {
           method: "POST",
@@ -2693,7 +2693,7 @@
         return;
       }
       state.playing = true;
-      elements.playButton.textContent = "暂停";
+      elements.playButton.textContent = "Pause";
       state.playbackGeneration += 1;
       const generation = state.playbackGeneration;
       runPlaybackLoop(generation);
@@ -2735,7 +2735,7 @@
     }
 
     async function pickLocalFile() {
-      setBusy(true, usesDirectoryPicker(state.vendorMode) ? "正在打开本地目录选择器..." : "正在打开本地文件选择器...");
+      setBusy(true, usesDirectoryPicker(state.vendorMode) ? "Opening local directory picker..." : "Opening local file picker...");
       try {
         const payload = await fetchJson(`/api/pick-file?vendor=${encodeURIComponent(state.vendorMode)}`);
         if (payload?.cancelled) {
@@ -2748,7 +2748,7 @@
           setStatus(error.message || getUploadHint(state.vendorMode), true);
           return;
         }
-        setStatus(`原生选文件失败，已切换浏览器上传：${error.message}`, true);
+        setStatus(`Native picker failed, switching to browser upload: ${error.message}`, true);
         elements.fileInput.click();
       } finally {
         setBusy(false);
@@ -2780,7 +2780,7 @@
       });
     });
     elements.refreshButton.addEventListener("click", () => {
-      setBusy(true, "正在刷新状态...");
+      setBusy(true, "Refreshing state...");
       refreshState()
         .then(() => setStatus("State refreshed."))
         .catch((error) => setStatus(error.message, true))
@@ -2914,7 +2914,7 @@
         if (state.data?.loaded) {
           elements.pathInput.value = state.data.sourcePath || "";
           saveRecentFile(elements.pathInput.value.trim());
-          setStatus(`已加载：${state.data.sourcePath}`);
+          setStatus(`Loaded: ${state.data.sourcePath}`);
         } else {
           setStatus("Waiting for an OCT file.");
         }

@@ -258,6 +258,7 @@ def laterality_to_chinese(value: str) -> str:
         "OD": "右眼",
         "OS": "左眼",
         "ALL": "双眼",
+        "UNKNOWN": "未标注",
     }.get(normalized, normalized or "-")
 
 
@@ -842,6 +843,7 @@ class HeidelbergViewerTrack:
     label: str
     modality: str
     laterality: str
+    display_laterality: str
     frame_count: int
     series_count: int
     first_datetime_iso: str | None
@@ -851,8 +853,10 @@ class HeidelbergViewerTrack:
 
 def viewer_laterality_label(value: str) -> str:
     normalized = clean_text(value).upper()
-    if normalized in {"ALL", ""}:
+    if normalized == "ALL":
         return "双眼"
+    if not normalized:
+        return "-"
     return laterality_to_chinese(normalized)
 
 
@@ -861,13 +865,44 @@ def viewer_modality_label(value: str) -> str:
     return normalized or "全部模式"
 
 
+def viewer_laterality_short_label(value: str) -> str:
+    normalized = clean_text(value).upper()
+    return {
+        "R": "OD",
+        "OD": "OD",
+        "L": "OS",
+        "OS": "OS",
+        "ALL": "OU",
+        "UNKNOWN": "UNK",
+    }.get(normalized, normalized or "-")
+
+
+def infer_group_laterality(
+    frames: list[HeidelbergFAFrame],
+    fallback: str = "ALL",
+) -> str:
+    normalized = {
+        clean_text(frame.laterality).upper() or "UNKNOWN"
+        for frame in frames
+    }
+    known = {value for value in normalized if value in {"R", "L", "OD", "OS"}}
+    if len(known) == 1:
+        return next(iter(known))
+    if len(known) > 1:
+        return "ALL"
+    if normalized == {"UNKNOWN"}:
+        return "UNKNOWN"
+    return fallback
+
+
 def build_track_label(
     modality: str,
     laterality: str,
     frames: list[HeidelbergFAFrame],
 ) -> str:
     modality_text = "全部模式" if modality == "ALL" else viewer_modality_label(modality)
-    laterality_text = viewer_laterality_label(laterality)
+    display_laterality = infer_group_laterality(frames, laterality)
+    laterality_text = viewer_laterality_label(display_laterality)
     first_iso = next((frame.acquisition_datetime_iso for frame in frames if frame.acquisition_datetime_iso), None)
     last_iso = next((frame.acquisition_datetime_iso for frame in reversed(frames) if frame.acquisition_datetime_iso), None)
     time_suffix = ""
@@ -915,6 +950,7 @@ def build_heidelberg_viewer_tracks(
 
     tracks: list[HeidelbergViewerTrack] = []
     for (modality, laterality), grouped_frames in sorted(grouped.items(), key=sort_key):
+        display_laterality = infer_group_laterality(grouped_frames, laterality)
         label = build_track_label(modality, laterality, grouped_frames)
         tracks.append(
             HeidelbergViewerTrack(
@@ -922,6 +958,7 @@ def build_heidelberg_viewer_tracks(
                 label=label,
                 modality=modality,
                 laterality=laterality,
+                display_laterality=display_laterality,
                 frame_count=len(grouped_frames),
                 series_count=len({frame.series_key for frame in grouped_frames}),
                 first_datetime_iso=next(
@@ -1773,6 +1810,10 @@ if QT_AVAILABLE:
             self.sequence_combo = QComboBox()
             self.sequence_combo.currentIndexChanged.connect(self.on_track_changed)
 
+            self.eye_filter_combo = QComboBox()
+            self.eye_filter_combo.addItem("全部", "ALL")
+            self.eye_filter_combo.currentIndexChanged.connect(self.apply_eye_filter)
+
             self.frame_slider = QSlider(Qt.Horizontal)
             self.frame_slider.setMinimum(0)
             self.frame_slider.setSingleStep(1)
@@ -1900,15 +1941,17 @@ if QT_AVAILABLE:
             navigation_layout = QGridLayout(navigation_group)
             navigation_layout.addWidget(QLabel("Track"), 0, 0)
             navigation_layout.addWidget(self.sequence_combo, 0, 1, 1, 3)
-            navigation_layout.addWidget(QLabel("Frame"), 1, 0)
-            navigation_layout.addWidget(self.frame_slider, 1, 1, 1, 3)
-            navigation_layout.addWidget(self.prev_button, 2, 0)
-            navigation_layout.addWidget(self.frame_spin, 2, 1)
-            navigation_layout.addWidget(self.next_button, 2, 2)
-            navigation_layout.addWidget(self.play_button, 2, 3)
-            navigation_layout.addWidget(QLabel("FPS"), 3, 0)
-            navigation_layout.addWidget(self.fps_spin, 3, 1)
-            navigation_layout.addWidget(self.frame_info_label, 3, 2, 1, 2)
+            navigation_layout.addWidget(QLabel("Eye filter"), 1, 0)
+            navigation_layout.addWidget(self.eye_filter_combo, 1, 1, 1, 3)
+            navigation_layout.addWidget(QLabel("Frame"), 2, 0)
+            navigation_layout.addWidget(self.frame_slider, 2, 1, 1, 3)
+            navigation_layout.addWidget(self.prev_button, 3, 0)
+            navigation_layout.addWidget(self.frame_spin, 3, 1)
+            navigation_layout.addWidget(self.next_button, 3, 2)
+            navigation_layout.addWidget(self.play_button, 3, 3)
+            navigation_layout.addWidget(QLabel("FPS"), 4, 0)
+            navigation_layout.addWidget(self.fps_spin, 4, 1)
+            navigation_layout.addWidget(self.frame_info_label, 4, 2, 1, 2)
 
             display_group = QGroupBox("Display")
             display_layout = QFormLayout(display_group)
@@ -2007,6 +2050,72 @@ if QT_AVAILABLE:
             self.path_label.setText("No dataset loaded")
             self.canvas.clear_views()
 
+        def _populate_eye_filter(self):
+            current_eye = self.eye_filter_combo.currentData() or "ALL"
+            eye_items = sorted(
+                {frame.laterality or "UNKNOWN" for frame in self.frames},
+                key=lambda value: {
+                    "R": 0,
+                    "OD": 0,
+                    "L": 1,
+                    "OS": 1,
+                    "UNKNOWN": 2,
+                }.get(clean_text(value).upper(), 99),
+            )
+
+            self.eye_filter_combo.blockSignals(True)
+            self.eye_filter_combo.clear()
+            self.eye_filter_combo.addItem("全部", "ALL")
+            for eye in eye_items:
+                self.eye_filter_combo.addItem(laterality_to_chinese(eye), eye)
+            index = self.eye_filter_combo.findData(current_eye)
+            self.eye_filter_combo.setCurrentIndex(index if index >= 0 else 0)
+            self.eye_filter_combo.blockSignals(False)
+
+        def _refresh_track_options(self, preferred_key: str | None = None):
+            self.sequence_combo.blockSignals(True)
+            self.sequence_combo.clear()
+            for track in self.tracks:
+                self.sequence_combo.addItem(track.label, track.key)
+            self.sequence_combo.blockSignals(False)
+
+            if not self.tracks:
+                self.current_track_index = 0
+                return
+
+            target_index = 0
+            if preferred_key:
+                matched_index = self.sequence_combo.findData(preferred_key)
+                if matched_index >= 0:
+                    target_index = matched_index
+
+            self.current_track_index = target_index
+            self.sequence_combo.blockSignals(True)
+            self.sequence_combo.setCurrentIndex(target_index)
+            self.sequence_combo.blockSignals(False)
+
+        def _update_summary_label(self):
+            selected_eye = self.eye_filter_combo.currentData() or "ALL"
+            summary_lines = summarize_tracks_for_console(self.tracks)
+            eye_filter_text = "全部" if selected_eye == "ALL" else laterality_to_chinese(selected_eye)
+            summary_text = f"Eye filter: {eye_filter_text}\nLoaded tracks:"
+            if summary_lines:
+                summary_text += "\n" + "\n".join(summary_lines[:8])
+                if len(summary_lines) > 8:
+                    summary_text += "\n..."
+            else:
+                summary_text += "\n-"
+            summary_text += (
+                f"\n\nPatient: {self.study_info.patient_name or '-'} | ID: {self.study_info.patient_id or '-'} | "
+                f"Sex: {self.study_info.sex_display} | DOB: {self.study_info.birth_date or '-'}"
+            )
+            summary_text += (
+                f"\nDevice: {self.study_info.device_display} | Study: {self.study_info.study_datetime_iso} | "
+                f"TZ: {self.study_info.timezone_display}"
+            )
+            summary_text += f"\nNote: {self.study_info.timing_note}"
+            self.summary_label.setText(summary_text)
+
         def current_track(self) -> HeidelbergViewerTrack | None:
             if not self.tracks:
                 return None
@@ -2061,33 +2170,37 @@ if QT_AVAILABLE:
             self.input_file = input_file
             self.study_info = study_info
             self.frames = frames
-            self.tracks = build_heidelberg_viewer_tracks(frames)
-            self.current_track_index = 0
             self.current_frame_index = 0
             self.path_label.setText(str(input_file))
             self.settings.setValue("last_dir", str(input_file.parent))
+            self._populate_eye_filter()
+            self.apply_eye_filter()
 
-            self.sequence_combo.blockSignals(True)
-            self.sequence_combo.clear()
-            for track in self.tracks:
-                self.sequence_combo.addItem(track.label)
-            self.sequence_combo.blockSignals(False)
-            self.sequence_combo.setCurrentIndex(0)
+        def apply_eye_filter(self):
+            if not self.frames:
+                self.tracks = []
+                self._refresh_track_options()
+                self._set_empty_state()
+                return
 
-            summary_lines = summarize_tracks_for_console(self.tracks)
-            summary_text = "Loaded tracks:\n" + "\n".join(summary_lines[:8])
-            if len(summary_lines) > 8:
-                summary_text += "\n..."
-            summary_text += (
-                f"\n\nPatient: {study_info.patient_name or '-'} | ID: {study_info.patient_id or '-'} | "
-                f"Sex: {study_info.sex_display} | DOB: {study_info.birth_date or '-'}"
-            )
-            summary_text += (
-                f"\nDevice: {study_info.device_display} | Study: {study_info.study_datetime_iso} | "
-                f"TZ: {study_info.timezone_display}"
-            )
-            summary_text += f"\nNote: {study_info.timing_note}"
-            self.summary_label.setText(summary_text)
+            preferred_key = self.current_track().key if self.current_track() else None
+            selected_eye = self.eye_filter_combo.currentData() or "ALL"
+            filtered_frames = [
+                frame
+                for frame in self.frames
+                if selected_eye == "ALL" or (frame.laterality or "UNKNOWN") == selected_eye
+            ]
+
+            self.tracks = build_heidelberg_viewer_tracks(filtered_frames)
+            self.current_frame_index = 0
+            self._refresh_track_options(preferred_key=preferred_key)
+            self._update_summary_label()
+
+            if not self.tracks:
+                self._set_empty_state()
+                self.statusBar().showMessage(f"当前眼别筛选下没有图像：{laterality_to_chinese(selected_eye)}", 5000)
+                return
+
             self.refresh_track()
 
         def refresh_track(self):
@@ -2112,7 +2225,6 @@ if QT_AVAILABLE:
             self.track_info_label.setText(
                 f"{track.label} | first={track.first_datetime_iso or '-'} | last={track.last_datetime_iso or '-'}"
             )
-            self.eye_label.setText(viewer_laterality_label(track.laterality))
             self.patient_name_label.setText(self.study_info.patient_name or "-")
             self.patient_id_label.setText(self.study_info.patient_id or "-")
             self.patient_sex_label.setText(self.study_info.sex_display)
@@ -2144,8 +2256,10 @@ if QT_AVAILABLE:
             else:
                 self.canvas.ax_image.imshow(display_image[:, :, :3], origin="upper")
             self.canvas.ax_image.axis("off")
+            frame_eye_value = frame.laterality or track.display_laterality
+            self.eye_label.setText(viewer_laterality_label(frame_eye_value))
             self.canvas.ax_image.set_title(
-                f"Eye: {viewer_laterality_label(track.laterality)} | Frame {self.current_frame_index + 1}/{track.frame_count} | {time_text}",
+                f"Eye: {viewer_laterality_short_label(frame_eye_value)} | Frame {self.current_frame_index + 1}/{track.frame_count} | {time_text}",
                 color="#E5E7EB",
             )
 

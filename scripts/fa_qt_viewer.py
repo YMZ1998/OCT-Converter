@@ -94,6 +94,8 @@ class UnifiedFAFrame:
     image_array: np.ndarray | None
     group_key: str
     group_label: str
+    laterality_key: str
+    laterality_label: str
     label: str
     source_detail: str
     acquisition_datetime: datetime | None
@@ -279,6 +281,8 @@ def load_topcon_dataset(input_path: Path) -> UnifiedFADataset:
             image_array=None,
             group_key=frame.modality or "Unknown",
             group_label=frame.modality or "Unknown",
+            laterality_key=clean_text(study_info.laterality).upper() or "UNKNOWN",
+            laterality_label=study_info.laterality_display,
             label=frame.label or "-",
             source_detail=frame.device or study_info.device_model or "Topcon FA",
             acquisition_datetime=frame.acquisition_datetime,
@@ -383,6 +387,8 @@ def load_hdb_dataset(input_path: Path) -> UnifiedFADataset:
                 image_array=np.asarray(frame.image),
                 group_key=f"{modality_text}:{clean_text(frame.laterality).upper() or 'UNKNOWN'}",
                 group_label=group_label,
+                laterality_key=clean_text(frame.laterality).upper() or "UNKNOWN",
+                laterality_label=laterality_text,
                 label=label,
                 source_detail=" | ".join(part for part in source_parts if part),
                 acquisition_datetime=frame.acquisition_datetime_local,
@@ -493,6 +499,8 @@ def load_zeiss_dataset(input_path: Path) -> UnifiedFADataset:
                 image_array=image,
                 group_key=laterality_key,
                 group_label=group_label,
+                laterality_key=laterality_key,
+                laterality_label=group_label,
                 label=label,
                 source_detail=(
                     f"{frame.source_file} | Series {series.series_number if series.series_number is not None else '-'}"
@@ -635,17 +643,9 @@ def build_summary_text(dataset: UnifiedFADataset, frames: list[UnifiedFAFrame]) 
         f"Frames: {len(frames)}",
         f"Groups: {summarize_groups(frames)}",
         f"Time range: {format_time_range(frames)}",
-        f"Study: {dataset.study_info.study_code or '-'}",
-        f"Device: {dataset.study_info.device_model or '-'}",
     ]
-    if dataset.study_info.patient_name or dataset.study_info.patient_id:
-        lines.append("")
-        lines.append(
-            "Patient: "
-            f"{dataset.study_info.patient_name or '-'} | "
-            f"ID: {dataset.study_info.patient_id or '-'} | "
-            f"Eye: {dataset.study_info.laterality or '-'}"
-        )
+    if dataset.study_info.study_code:
+        lines.append(f"Study: {dataset.study_info.study_code}")
     return "\n".join(lines)
 
 
@@ -662,6 +662,7 @@ def build_frame_metadata_text(
         [
             f"Vendor: {dataset.vendor_label}",
             f"Track: {frame.group_label or '-'}",
+            f"Eye: {frame.laterality_label or '-'}",
             f"Frame: {visible_index + 1}/{visible_total}",
             f"Original index: {frame.order_index + 1}/{total_frames}",
             f"File: {frame.filename}",
@@ -840,6 +841,9 @@ class UnifiedFAViewerWindow(QMainWindow):
         self.group_combo = QComboBox()
         self.group_combo.currentIndexChanged.connect(self.refresh_visible_frames)
 
+        self.eye_combo = QComboBox()
+        self.eye_combo.currentIndexChanged.connect(self.refresh_visible_frames)
+
         self.hide_proofsheet_checkbox = QCheckBox("隐藏 Proofsheet")
         self.hide_proofsheet_checkbox.setChecked(True)
         self.hide_proofsheet_checkbox.toggled.connect(self.refresh_visible_frames)
@@ -892,7 +896,7 @@ class UnifiedFAViewerWindow(QMainWindow):
         self.path_label.setWordWrap(True)
         self.path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-        self.summary_label = QLabel("Ready to load Topcon / Zeiss FA data")
+        self.summary_label = QLabel("Ready to load Topcon / Zeiss / HDB FA data")
         self.summary_label.setObjectName("SummaryLabel")
         self.summary_label.setWordWrap(True)
 
@@ -988,15 +992,17 @@ class UnifiedFAViewerWindow(QMainWindow):
         navigation_layout = QGridLayout(navigation_group)
         navigation_layout.addWidget(QLabel("Track"), 0, 0)
         navigation_layout.addWidget(self.group_combo, 0, 1, 1, 3)
-        navigation_layout.addWidget(QLabel("Frame"), 1, 0)
-        navigation_layout.addWidget(self.timeline_slider, 1, 1, 1, 3)
-        navigation_layout.addWidget(self.prev_button, 2, 0)
-        navigation_layout.addWidget(self.frame_spin, 2, 1)
-        navigation_layout.addWidget(self.next_button, 2, 2)
-        navigation_layout.addWidget(self.play_button, 2, 3)
-        navigation_layout.addWidget(QLabel("FPS"), 3, 0)
-        navigation_layout.addWidget(self.fps_spinbox, 3, 1)
-        navigation_layout.addWidget(self.frame_info_label, 3, 2, 1, 2)
+        navigation_layout.addWidget(QLabel("Eye"), 1, 0)
+        navigation_layout.addWidget(self.eye_combo, 1, 1, 1, 3)
+        navigation_layout.addWidget(QLabel("Frame"), 2, 0)
+        navigation_layout.addWidget(self.timeline_slider, 2, 1, 1, 3)
+        navigation_layout.addWidget(self.prev_button, 3, 0)
+        navigation_layout.addWidget(self.frame_spin, 3, 1)
+        navigation_layout.addWidget(self.next_button, 3, 2)
+        navigation_layout.addWidget(self.play_button, 3, 3)
+        navigation_layout.addWidget(QLabel("FPS"), 4, 0)
+        navigation_layout.addWidget(self.fps_spinbox, 4, 1)
+        navigation_layout.addWidget(self.frame_info_label, 4, 2, 1, 2)
 
         display_group = QGroupBox("Display")
         display_layout = QFormLayout(display_group)
@@ -1124,6 +1130,7 @@ class UnifiedFAViewerWindow(QMainWindow):
         self.settings.setValue("last_path", str(dataset.input_path))
         self.settings.setValue("vendor_mode", self._selected_vendor())
         self._populate_group_combo()
+        self._populate_eye_combo()
         self._update_dataset_panel()
         self._update_patient_panel()
         self._update_vendor_specific_controls()
@@ -1146,6 +1153,19 @@ class UnifiedFAViewerWindow(QMainWindow):
             if index >= 0:
                 self.group_combo.setCurrentIndex(index)
         self.group_combo.blockSignals(False)
+
+    def _populate_eye_combo(self) -> None:
+        current = self.eye_combo.currentText()
+        self.eye_combo.blockSignals(True)
+        self.eye_combo.clear()
+        self.eye_combo.addItem("All")
+        for eye in unique_preserve_order([frame.laterality_label for frame in self.frames]):
+            self.eye_combo.addItem(eye)
+        if current:
+            index = self.eye_combo.findText(current)
+            if index >= 0:
+                self.eye_combo.setCurrentIndex(index)
+        self.eye_combo.blockSignals(False)
 
     def _update_vendor_specific_controls(self) -> None:
         is_topcon = self.dataset is not None and self.dataset.vendor == VENDOR_TOPCON
@@ -1188,11 +1208,14 @@ class UnifiedFAViewerWindow(QMainWindow):
             current_file = self.visible_frames[self.current_visible_index].filename
 
         selected_group = self.group_combo.currentText()
+        selected_eye = self.eye_combo.currentText()
         hide_proofsheets = self.hide_proofsheet_checkbox.isChecked()
 
         self.visible_frames = []
         for frame in self.frames:
             if selected_group != "All" and frame.group_label != selected_group:
+                continue
+            if selected_eye != "All" and frame.laterality_label != selected_eye:
                 continue
             if hide_proofsheets and frame.is_proofsheet:
                 continue
@@ -1275,10 +1298,7 @@ class UnifiedFAViewerWindow(QMainWindow):
         self.frame_time_label.setText(frame.acquisition_display or "-")
         self.frame_size_label.setText(frame.size_display)
         self.frame_source_label.setText(frame.source_detail or "-")
-        if self.group_combo.currentText() == "All":
-            self.patient_eye_label.setText(self.dataset.study_info.laterality if self.dataset else "-")
-        else:
-            self.patient_eye_label.setText(frame.group_label or "-")
+        self.patient_eye_label.setText(frame.laterality_label or (self.dataset.study_info.laterality if self.dataset else "-"))
         self.frame_info_label.setText(f"Frame: {index + 1}/{len(self.visible_frames)}")
         self.view_caption_label.setText(
             f"{frame.group_label or '-'} | Frame {index + 1}/{len(self.visible_frames)} | {frame.acquisition_display or '-'}"
@@ -1364,9 +1384,17 @@ class UnifiedFAViewerWindow(QMainWindow):
     def _set_empty_state(self, message: str) -> None:
         self.dataset = None
         self.frames = []
+        self.group_combo.blockSignals(True)
+        self.group_combo.clear()
+        self.group_combo.addItem("All")
+        self.group_combo.blockSignals(False)
+        self.eye_combo.blockSignals(True)
+        self.eye_combo.clear()
+        self.eye_combo.addItem("All")
+        self.eye_combo.blockSignals(False)
         self._set_frame_detail_state(message)
         self.path_label.setText(message)
-        self.summary_label.setText("Ready to load Topcon / Zeiss FA data")
+        self.summary_label.setText("Ready to load Topcon / Zeiss / HDB FA data")
         self.dataset_path_label.setText("-")
         self.dataset_vendor_label.setText("-")
         self.dataset_frames_label.setText("-")

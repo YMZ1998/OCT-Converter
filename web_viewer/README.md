@@ -220,3 +220,27 @@ python -m py_compile web_viewer\__init__.py web_viewer\app.py web_viewer\server.
 - `web_viewer/tupai_loader.py`
 - `web_viewer/oct_viewer_vendor_modes.py`
 - `web_viewer/oct_web_viewer.html`
+
+## FA Web Viewer
+
+This folder also includes a local FA web viewer for:
+
+- `Topcon` FA folders
+- `Zeiss` DICOM folders / files
+- `HDB / Heidelberg` `.E2E` files
+
+Start it with:
+
+```bash
+python web_viewer/fa_web_viewer.py
+python web_viewer/fa_web_viewer.py /path/to/fa_dataset --vendor auto
+python web_viewer/fa_web_viewer.py /path/to/file.e2e --vendor hdb
+```
+
+Related files:
+
+- `web_viewer/fa_web_viewer.py`
+- `web_viewer/fa_app.py`
+- `web_viewer/fa_server.py`
+- `web_viewer/fa_state.py`
+- `web_viewer/fa_web_viewer.html`

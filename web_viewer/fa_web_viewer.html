@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FA Web Viewer</title>
+  <style>
+    :root {
+      --bg: #111827;
+      --panel: #0f172a;
+      --panel-2: #0b1220;
+      --border: #334155;
+      --text: #e5e7eb;
+      --muted: #cbd5e1;
+      --accent: #60a5fa;
+      --accent-2: #f97316;
+      --row-alt: #101a2e;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    }
+
+    button, input, select {
+      font: inherit;
+      color: var(--text);
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+
+    button {
+      background: #1f2937;
+      cursor: pointer;
+    }
+
+    button:hover { background: #273449; }
+    input[type="range"] { padding: 0; }
+    input[type="checkbox"] { transform: scale(1.1); }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 10px 14px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 20;
+    }
+
+    .toolbar .path-input { flex: 1; min-width: 260px; }
+    .page {
+      display: flex;
+      gap: 10px;
+      min-height: calc(100vh - 58px);
+      padding: 10px;
+    }
+
+    .sidebar {
+      width: 420px;
+      min-width: 420px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .main {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .panel {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+    }
+
+    .panel-title {
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: 100px 1fr;
+      gap: 8px 10px;
+      align-items: center;
+    }
+
+    .muted { color: var(--muted); }
+    .mono {
+      font-family: Consolas, "Courier New", monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .path-display, .summary-text {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      min-height: 38px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .nav-grid {
+      display: grid;
+      grid-template-columns: 100px 1fr 1fr 1fr;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .nav-grid .wide { grid-column: 2 / 5; }
+    .nav-grid .span2 { grid-column: span 2; }
+
+    .image-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 420px;
+    }
+
+    .image-wrap {
+      flex: 1;
+      min-height: 380px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    #frameImage {
+      max-width: 100%;
+      max-height: 68vh;
+      object-fit: contain;
+      display: block;
+    }
+
+    .caption {
+      text-align: center;
+      color: var(--muted);
+      min-height: 24px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    thead th {
+      position: sticky;
+      top: 0;
+      background: #1e293b;
+      z-index: 1;
+    }
+
+    th, td {
+      border-bottom: 1px solid #243041;
+      padding: 8px 10px;
+      text-align: left;
+    }
+
+    tbody tr:nth-child(even) { background: var(--row-alt); }
+    tbody tr.active { background: rgba(96, 165, 250, 0.18); }
+    tbody tr:hover { background: rgba(96, 165, 250, 0.1); cursor: pointer; }
+
+    .table-wrap {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: auto;
+      max-height: 34vh;
+    }
+
+    .status-bar {
+      padding: 8px 14px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      background: var(--panel);
+      position: sticky;
+      bottom: 0;
+    }
+
+    @media (max-width: 1200px) {
+      .page {
+        flex-direction: column;
+      }
+      .sidebar {
+        width: 100%;
+        min-width: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <select id="vendorSelect"></select>
+    <input id="pathInput" class="path-input" type="text" placeholder="输入 FA 数据路径">
+    <button id="openDirButton">选目录</button>
+    <button id="openFileButton">选文件</button>
+    <button id="loadButton">加载</button>
+  </div>
+
+  <div class="page">
+    <aside class="sidebar">
+      <section class="panel">
+        <div class="panel-title">Input</div>
+        <div class="form-grid">
+          <div class="muted">路径</div>
+          <div id="pathDisplay" class="path-display">未加载</div>
+          <div class="muted">最近使用</div>
+          <select id="recentSelect"></select>
+          <div class="muted">隐藏</div>
+          <label><input id="hideProofsheet" type="checkbox" checked> Proofsheet</label>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">Navigation</div>
+        <div class="nav-grid">
+          <div class="muted">分组</div>
+          <select id="groupSelect" class="wide"></select>
+          <div class="muted">眼别</div>
+          <select id="eyeSelect" class="wide"></select>
+          <div class="muted">帧</div>
+          <input id="frameSlider" class="wide" type="range" min="0" max="0" value="0">
+          <button id="prevButton">上一帧</button>
+          <input id="frameNumberInput" type="number" min="1" value="1">
+          <button id="nextButton">下一帧</button>
+          <button id="playButton">播放</button>
+          <div class="muted">FPS</div>
+          <input id="fpsInput" type="number" min="1" max="30" value="3">
+          <div id="frameInfo" class="muted span2">Frame: -</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">Display</div>
+        <div class="form-grid">
+          <div class="muted">对比度</div>
+          <input id="contrastSlider" type="range" min="50" max="200" value="100">
+          <div class="muted">亮度</div>
+          <input id="brightnessSlider" type="range" min="-80" max="80" value="0">
+          <div class="muted">分组</div>
+          <div id="trackInfo" class="path-display">-</div>
+          <div class="muted">眼别</div>
+          <div id="eyeInfo" class="path-display">-</div>
+          <div class="muted">时间</div>
+          <div id="timeInfo" class="path-display">-</div>
+          <div class="muted">来源</div>
+          <div id="sourceInfo" class="path-display">-</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">Patient</div>
+        <div class="form-grid">
+          <div class="muted">姓名</div><div id="patientName" class="path-display">-</div>
+          <div class="muted">ID</div><div id="patientId" class="path-display">-</div>
+          <div class="muted">检查日期</div><div id="examDate" class="path-display">-</div>
+          <div class="muted">设备</div><div id="deviceInfo" class="path-display">-</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">Summary</div>
+        <div id="summaryText" class="summary-text"></div>
+      </section>
+
+      <section class="panel" style="flex:1; min-height: 220px;">
+        <div class="panel-title">Metadata</div>
+        <div id="metadataText" class="summary-text mono" style="height: 100%; min-height: 180px;"></div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <section class="panel image-panel">
+        <div class="image-wrap">
+          <img id="frameImage" alt="FA frame">
+        </div>
+        <div id="imageCaption" class="caption">FA frame</div>
+      </section>
+
+      <section class="panel" style="flex:1; min-height: 260px;">
+        <div class="panel-title">Frames</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>文件</th>
+                <th>分组</th>
+                <th>标签</th>
+                <th>相对时间</th>
+                <th>采集时间</th>
+              </tr>
+            </thead>
+            <tbody id="frameTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="statusBar" class="status-bar">准备就绪</div>
+
+  <script>
+    const STORAGE_KEYS = {
+      recentPaths: 'fa-web-viewer.recent-paths',
+      lastPath: 'fa-web-viewer.last-path',
+      vendorMode: 'fa-web-viewer.vendor-mode',
+    };
+
+    const state = {
+      payload: null,
+      visibleFrames: [],
+      currentVisibleIndex: -1,
+      playing: false,
+      timerId: null,
+    };
+
+    const els = {
+      vendorSelect: document.getElementById('vendorSelect'),
+      pathInput: document.getElementById('pathInput'),
+      openDirButton: document.getElementById('openDirButton'),
+      openFileButton: document.getElementById('openFileButton'),
+      loadButton: document.getElementById('loadButton'),
+      recentSelect: document.getElementById('recentSelect'),
+      hideProofsheet: document.getElementById('hideProofsheet'),
+      groupSelect: document.getElementById('groupSelect'),
+      eyeSelect: document.getElementById('eyeSelect'),
+      frameSlider: document.getElementById('frameSlider'),
+      frameNumberInput: document.getElementById('frameNumberInput'),
+      prevButton: document.getElementById('prevButton'),
+      nextButton: document.getElementById('nextButton'),
+      playButton: document.getElementById('playButton'),
+      fpsInput: document.getElementById('fpsInput'),
+      contrastSlider: document.getElementById('contrastSlider'),
+      brightnessSlider: document.getElementById('brightnessSlider'),
+      frameImage: document.getElementById('frameImage'),
+      imageCaption: document.getElementById('imageCaption'),
+      frameTableBody: document.getElementById('frameTableBody'),
+      statusBar: document.getElementById('statusBar'),
+      pathDisplay: document.getElementById('pathDisplay'),
+      summaryText: document.getElementById('summaryText'),
+      metadataText: document.getElementById('metadataText'),
+      frameInfo: document.getElementById('frameInfo'),
+      trackInfo: document.getElementById('trackInfo'),
+      eyeInfo: document.getElementById('eyeInfo'),
+      timeInfo: document.getElementById('timeInfo'),
+      sourceInfo: document.getElementById('sourceInfo'),
+      patientName: document.getElementById('patientName'),
+      patientId: document.getElementById('patientId'),
+      examDate: document.getElementById('examDate'),
+      deviceInfo: document.getElementById('deviceInfo'),
+    };
+
+    function setStatus(message) {
+      els.statusBar.textContent = message;
+    }
+
+    async function apiJson(url) {
+      const response = await fetch(url);
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || `Request failed: ${response.status}`);
+      }
+      return payload;
+    }
+
+    function currentVendorMode() {
+      return els.vendorSelect.value || 'auto';
+    }
+
+    function loadRecentPaths() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(STORAGE_KEYS.recentPaths)) || [];
+        return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function saveRecentPath(path) {
+      if (!path) return;
+      const normalized = String(path).trim();
+      if (!normalized) return;
+      const recentPaths = loadRecentPaths().filter((item) => item !== normalized);
+      recentPaths.unshift(normalized);
+      localStorage.setItem(STORAGE_KEYS.recentPaths, JSON.stringify(recentPaths.slice(0, 8)));
+      localStorage.setItem(STORAGE_KEYS.lastPath, normalized);
+    }
+
+    function mergedRecentPaths(payload) {
+      const localRecent = loadRecentPaths();
+      const serverRecent = Array.isArray(payload?.recentPaths) ? payload.recentPaths.filter(Boolean) : [];
+      return [...new Set([...serverRecent, ...localRecent])].slice(0, 8);
+    }
+
+    function stopPlayback() {
+      state.playing = false;
+      if (state.timerId !== null) {
+          clearInterval(state.timerId);
+        state.timerId = null;
+      }
+      els.playButton.textContent = '播放';
+    }
+
+    function startPlayback() {
+      stopPlayback();
+      const fps = Math.max(1, Number(els.fpsInput.value) || 3);
+      state.playing = true;
+      els.playButton.textContent = '暂停';
+      state.timerId = window.setInterval(() => {
+        gotoFrame(state.currentVisibleIndex + 1);
+      }, Math.round(1000 / fps));
+    }
+
+    function togglePlayback() {
+      if (!state.visibleFrames.length) return;
+      if (state.playing) {
+        stopPlayback();
+      } else {
+        startPlayback();
+      }
+    }
+
+    function renderVendorOptions(payload) {
+      const previous = localStorage.getItem(STORAGE_KEYS.vendorMode) || els.vendorSelect.value || 'auto';
+      els.vendorSelect.innerHTML = '';
+      for (const item of payload.supportedVendors || []) {
+        const option = document.createElement('option');
+        option.value = item.value;
+        option.textContent = item.label;
+        els.vendorSelect.appendChild(option);
+      }
+      els.vendorSelect.value = previous || payload.vendorMode || 'auto';
+    }
+
+    function renderRecentPaths(payload) {
+      const recentPaths = mergedRecentPaths(payload);
+      els.recentSelect.innerHTML = '';
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = recentPaths.length ? '选择最近路径' : '暂无最近路径';
+      els.recentSelect.appendChild(placeholder);
+      for (const item of recentPaths) {
+        const option = document.createElement('option');
+        option.value = item;
+        option.textContent = item;
+        els.recentSelect.appendChild(option);
+      }
+    }
+
+    function setEmptyView(message) {
+      stopPlayback();
+      state.visibleFrames = [];
+      state.currentVisibleIndex = -1;
+      els.pathDisplay.textContent = message || '未加载';
+      els.summaryText.textContent = '准备加载 Topcon / Zeiss / HDB FA 数据';
+      els.metadataText.textContent = '';
+      els.frameInfo.textContent = 'Frame: -';
+      els.trackInfo.textContent = '-';
+      els.eyeInfo.textContent = '-';
+      els.timeInfo.textContent = '-';
+      els.sourceInfo.textContent = '-';
+      els.patientName.textContent = '-';
+      els.patientId.textContent = '-';
+      els.examDate.textContent = '-';
+      els.deviceInfo.textContent = '-';
+      els.frameImage.removeAttribute('src');
+      els.imageCaption.textContent = 'FA frame';
+      els.frameTableBody.innerHTML = '';
+      els.groupSelect.innerHTML = '<option value="ALL">全部</option>';
+      els.eyeSelect.innerHTML = '<option value="ALL">全部</option>';
+      els.frameSlider.max = 0;
+      els.frameSlider.value = 0;
+      els.frameNumberInput.value = 1;
+      els.frameNumberInput.max = 1;
+    }
+
+    function applyPayload(payload) {
+      state.payload = payload;
+      if (payload.loaded) {
+        const dataset = payload.dataset || {};
+        saveRecentPath(dataset.inputPath || payload.sourcePath || '');
+      }
+      renderVendorOptions(payload);
+      renderRecentPaths(payload);
+
+      if (!payload.loaded) {
+        setEmptyView('未加载');
+        return;
+      }
+
+      const dataset = payload.dataset;
+      els.pathInput.value = payload.sourcePath || dataset.inputPath || '';
+      els.pathDisplay.textContent = dataset.inputPath || payload.sourcePath || '-';
+      els.summaryText.textContent = dataset.summaryText || '';
+      els.patientName.textContent = dataset.patientName || '-';
+      els.patientId.textContent = dataset.patientId || '-';
+      els.examDate.textContent = dataset.examDate || '-';
+      els.deviceInfo.textContent = dataset.deviceModel || '-';
+
+      const currentGroup = els.groupSelect.value || 'ALL';
+      const currentEye = els.eyeSelect.value || 'ALL';
+      els.groupSelect.innerHTML = '';
+      const allOption = document.createElement('option');
+      allOption.value = 'ALL';
+      allOption.textContent = '全部';
+      els.groupSelect.appendChild(allOption);
+      for (const group of payload.groups || []) {
+        const option = document.createElement('option');
+        option.value = group;
+        option.textContent = group;
+        els.groupSelect.appendChild(option);
+      }
+      els.groupSelect.value = (payload.groups || []).includes(currentGroup) ? currentGroup : 'ALL';
+
+      els.eyeSelect.innerHTML = '';
+      const allEyeOption = document.createElement('option');
+      allEyeOption.value = 'ALL';
+      allEyeOption.textContent = '全部';
+      els.eyeSelect.appendChild(allEyeOption);
+      for (const eye of payload.lateralityOptions || []) {
+        const option = document.createElement('option');
+        option.value = eye;
+        option.textContent = eye;
+        els.eyeSelect.appendChild(option);
+      }
+      els.eyeSelect.value = (payload.lateralityOptions || []).includes(currentEye) ? currentEye : 'ALL';
+
+      refreshVisibleFrames();
+    }
+
+    function filteredFrames() {
+      if (!state.payload || !state.payload.loaded) return [];
+      const selectedGroup = els.groupSelect.value || 'ALL';
+      const selectedEye = els.eyeSelect.value || 'ALL';
+      const hideProofsheet = els.hideProofsheet.checked;
+      return (state.payload.frames || []).filter((frame) => {
+        if (selectedGroup !== 'ALL' && frame.groupLabel !== selectedGroup) return false;
+        if (selectedEye !== 'ALL' && frame.lateralityLabel !== selectedEye) return false;
+        if (hideProofsheet && frame.isProofsheet) return false;
+        return true;
+      });
+    }
+
+    function refreshVisibleFrames() {
+      if (!state.payload || !state.payload.loaded) {
+        setEmptyView('未加载');
+        return;
+      }
+
+      const previous = state.visibleFrames[state.currentVisibleIndex];
+      const previousIndex = previous ? previous.originalIndex : null;
+      state.visibleFrames = filteredFrames();
+
+      if (!state.visibleFrames.length) {
+        stopPlayback();
+        els.frameTableBody.innerHTML = '';
+        els.frameImage.removeAttribute('src');
+        els.imageCaption.textContent = '当前筛选条件下没有帧';
+        els.metadataText.textContent = '';
+        els.frameInfo.textContent = 'Frame: -';
+        els.trackInfo.textContent = '-';
+        els.timeInfo.textContent = '-';
+        els.sourceInfo.textContent = '-';
+        return;
+      }
+
+      let targetIndex = 0;
+      if (previousIndex !== null) {
+        const matched = state.visibleFrames.findIndex((frame) => frame.originalIndex === previousIndex);
+        if (matched >= 0) targetIndex = matched;
+      }
+
+      renderFrameTable();
+      gotoFrame(targetIndex);
+    }
+
+    function renderFrameTable() {
+      els.frameTableBody.innerHTML = '';
+      state.visibleFrames.forEach((frame, visibleIndex) => {
+        const tr = document.createElement('tr');
+        tr.dataset.index = String(visibleIndex);
+        tr.innerHTML = `
+          <td>${frame.originalIndex + 1}</td>
+          <td>${escapeHtml(frame.filename || '-')}</td>
+          <td>${escapeHtml(frame.groupLabel || '-')}</td>
+          <td>${escapeHtml(frame.label || '-')}</td>
+          <td>${escapeHtml(frame.elapsedDisplay || '-')}</td>
+          <td>${escapeHtml(frame.acquisitionDisplay || '-')}</td>
+        `;
+        tr.addEventListener('click', () => gotoFrame(visibleIndex));
+        els.frameTableBody.appendChild(tr);
+      });
+    }
+
+    function escapeHtml(text) {
+      return String(text)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function gotoFrame(index) {
+      if (!state.visibleFrames.length) return;
+      const normalized = ((index % state.visibleFrames.length) + state.visibleFrames.length) % state.visibleFrames.length;
+      state.currentVisibleIndex = normalized;
+      const frame = state.visibleFrames[normalized];
+      const dataset = state.payload.dataset;
+      const elapsedText = frame.elapsedDisplay && frame.elapsedDisplay !== '-' ? ` | ${frame.elapsedDisplay}` : '';
+
+      els.frameSlider.max = Math.max(state.visibleFrames.length - 1, 0);
+      els.frameSlider.value = normalized;
+      els.frameNumberInput.max = Math.max(state.visibleFrames.length, 1);
+      els.frameNumberInput.value = normalized + 1;
+      els.frameInfo.textContent = `Frame: ${normalized + 1}/${state.visibleFrames.length}`;
+      els.trackInfo.textContent = `${frame.groupLabel || '-'} | ${state.visibleFrames.length} 帧 | 总计 ${dataset.frameCount}`;
+      els.eyeInfo.textContent = frame.lateralityLabel || dataset.laterality || '-';
+      els.timeInfo.textContent = `${frame.acquisitionDisplay || '-'}${elapsedText}`;
+      els.sourceInfo.textContent = frame.sourceDetail || '-';
+      els.imageCaption.textContent = `${frame.groupLabel || '-'} | Frame ${normalized + 1}/${state.visibleFrames.length} | ${frame.acquisitionDisplay || '-'}`;
+      els.metadataText.textContent = frame.metadataText || '';
+
+      const contrast = Number(els.contrastSlider.value) || 100;
+      const brightness = Number(els.brightnessSlider.value) || 0;
+      els.frameImage.src = `/api/frame/${frame.originalIndex}.png?contrast=${contrast}&brightness=${brightness}&_=${Date.now()}`;
+
+      for (const row of els.frameTableBody.querySelectorAll('tr')) {
+        row.classList.toggle('active', Number(row.dataset.index) === normalized);
+      }
+
+      setStatus(`${frame.filename} | ${frame.groupLabel || '-'} | ${frame.acquisitionDisplay || '-'}`);
+    }
+
+    async function loadCurrentPath() {
+      const path = els.pathInput.value.trim();
+      if (!path) {
+        setStatus('请先输入路径');
+        return;
+      }
+      stopPlayback();
+      setStatus('正在加载数据...');
+      try {
+        const payload = await apiJson(`/api/load?path=${encodeURIComponent(path)}&vendor=${encodeURIComponent(currentVendorMode())}`);
+        applyPayload(payload);
+        setStatus(`已加载：${payload.dataset ? payload.dataset.inputPath : path}`);
+      } catch (error) {
+        setStatus(error.message);
+        alert(error.message);
+      }
+    }
+
+    async function pickPath(kind) {
+      stopPlayback();
+      setStatus(kind === 'directory' ? '正在打开目录选择器...' : '正在打开文件选择器...');
+      try {
+        const endpoint = kind === 'directory' ? '/api/pick-directory' : '/api/pick-file';
+        const payload = await apiJson(`${endpoint}?vendor=${encodeURIComponent(currentVendorMode())}`);
+        if (payload.cancelled) {
+          setStatus('已取消选择');
+          return;
+        }
+        applyPayload(payload);
+        setStatus(`已加载：${payload.dataset ? payload.dataset.inputPath : ''}`);
+      } catch (error) {
+        setStatus(error.message);
+        alert(error.message);
+      }
+    }
+
+    async function initialize() {
+      try {
+        const payload = await apiJson('/api/state');
+        renderVendorOptions(payload);
+        renderRecentPaths(payload);
+        applyPayload(payload);
+        if (!payload.loaded) {
+          const lastPath = localStorage.getItem(STORAGE_KEYS.lastPath) || '';
+          if (lastPath && !els.pathInput.value.trim()) {
+            els.pathInput.value = lastPath;
+          }
+        }
+        setStatus('准备就绪');
+      } catch (error) {
+        setStatus(error.message);
+      }
+    }
+
+    els.loadButton.addEventListener('click', loadCurrentPath);
+    els.openDirButton.addEventListener('click', () => pickPath('directory'));
+    els.openFileButton.addEventListener('click', () => pickPath('file'));
+    els.recentSelect.addEventListener('change', () => {
+      if (els.recentSelect.value) {
+        els.pathInput.value = els.recentSelect.value;
+        loadCurrentPath();
+      }
+    });
+    els.vendorSelect.addEventListener('change', () => {
+      localStorage.setItem(STORAGE_KEYS.vendorMode, currentVendorMode());
+    });
+    els.groupSelect.addEventListener('change', refreshVisibleFrames);
+    els.eyeSelect.addEventListener('change', refreshVisibleFrames);
+    els.hideProofsheet.addEventListener('change', refreshVisibleFrames);
+    els.frameSlider.addEventListener('input', () => gotoFrame(Number(els.frameSlider.value)));
+    els.frameNumberInput.addEventListener('change', () => gotoFrame(Number(els.frameNumberInput.value) - 1));
+    els.prevButton.addEventListener('click', () => gotoFrame(state.currentVisibleIndex - 1));
+    els.nextButton.addEventListener('click', () => gotoFrame(state.currentVisibleIndex + 1));
+    els.playButton.addEventListener('click', togglePlayback);
+    els.fpsInput.addEventListener('change', () => {
+      if (state.playing) startPlayback();
+    });
+    els.contrastSlider.addEventListener('input', () => gotoFrame(state.currentVisibleIndex));
+    els.brightnessSlider.addEventListener('input', () => gotoFrame(state.currentVisibleIndex));
+    els.pathInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') loadCurrentPath();
+    });
+
+    window.addEventListener('keydown', (event) => {
+      if (event.target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName)) {
+        if (event.key !== 'Escape') return;
+      }
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        gotoFrame(state.currentVisibleIndex - 1);
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        gotoFrame(state.currentVisibleIndex + 1);
+      } else if (event.code === 'Space') {
+        event.preventDefault();
+        togglePlayback();
+      }
+    });
+
+    initialize();
+  </script>
+</body>
+</html>
