@@ -37,7 +37,7 @@ def main() -> None:
     """Starts the local OCT web viewer server."""
 
     args = parse_args()
-    html_path = Path(__file__).with_name("oct_web_viewer.html")
+    html_path = Path(__file__).with_name("viewer.html")
     state = ViewerState(
         img_rows=args.img_rows,
         img_cols=args.img_cols,

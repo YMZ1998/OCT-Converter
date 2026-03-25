@@ -40,9 +40,9 @@ This repo also includes a lightweight local web viewer for OCT files:
 python web_viewer/oct_web_viewer.py /path/to/file.e2e
 ```
 
-Detailed viewer documentation is available at `web_viewer/README.md`.
+Detailed viewer documentation, CLI notes, and HTTP API descriptions are available at `web_viewer/README.md`.
 
-It starts a local server and opens a browser page where you can:
+It starts a local server and serves a browser page where you can:
 
 - browse B-scan slices with a slider or keyboard
 - view projection images
@@ -88,6 +88,25 @@ It starts a local web page with a Zeiss-style layout and supports:
 - HDB / Heidelberg `.E2E` files
 - local file or directory picking from the browser
 - frame table, filtering, playback, contrast/brightness, and metadata inspection
+
+Detailed viewer documentation, startup parameters, and HTTP API descriptions are available at `web_viewer/README.md`.
+
+### Viewer layout
+
+The viewer-related files are now split by modality to keep the repo easier to navigate:
+
+- `web_viewer/oct/`: OCT web viewer implementation
+- `web_viewer/fa/`: FA web viewer implementation
+- `scripts/oct/`: OCT Qt / parsing scripts
+- `scripts/fa/`: FA Qt / parsing scripts
+
+Only the user-facing startup entries are kept at the top level:
+
+- `web_viewer/oct_web_viewer.py`
+- `web_viewer/fa_web_viewer.py`
+- `scripts/fa_qt_viewer.py`
+
+Detailed viewer docs: `web_viewer/README.md`
 
 Here is an example of reading a .fds file:
 

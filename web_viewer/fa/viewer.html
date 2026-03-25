@@ -15,6 +15,9 @@
       --accent: #60a5fa;
       --accent-2: #f97316;
       --row-alt: #101a2e;
+      --frame-row-height: 36px;
+      --frame-header-height: 40px;
+      --frame-visible-rows: 10;
     }
 
     * { box-sizing: border-box; }
@@ -79,6 +82,16 @@
       gap: 10px;
     }
 
+    .viewer-grid {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 460px;
+      gap: 10px;
+      align-items: start;
+    }
+
     .panel {
       background: transparent;
       border: 1px solid var(--border);
@@ -129,12 +142,23 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
-      min-height: 420px;
+      min-height: 0;
+      align-items: flex-start;
+    }
+
+    .frames-panel {
+      width: 460px;
+      min-width: 460px;
+      display: flex;
+      flex-direction: column;
     }
 
     .image-wrap {
-      flex: 1;
-      min-height: 380px;
+      flex: none;
+      width: min(100%, 980px);
+      height: min(68vh, 680px);
+      min-width: 420px;
+      min-height: 320px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -142,11 +166,12 @@
       border: 1px solid var(--border);
       border-radius: 10px;
       overflow: hidden;
+      resize: both;
     }
 
     #frameImage {
       max-width: 100%;
-      max-height: 68vh;
+      max-height: 100%;
       object-fit: contain;
       display: block;
     }
@@ -188,6 +213,41 @@
       max-height: 34vh;
     }
 
+    .frames-panel .table-wrap {
+      flex: none;
+      height: calc(var(--frame-header-height) + (var(--frame-row-height) * var(--frame-visible-rows)) + 2px);
+      max-height: calc(var(--frame-header-height) + (var(--frame-row-height) * var(--frame-visible-rows)) + 2px);
+    }
+
+    .frames-panel table {
+      table-layout: fixed;
+    }
+
+    .frames-panel thead tr {
+      height: var(--frame-header-height);
+    }
+
+    .frames-panel tbody tr {
+      height: var(--frame-row-height);
+    }
+
+    .frames-panel th,
+    .frames-panel td {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    @media (max-width: 1500px) {
+      .viewer-grid {
+        grid-template-columns: minmax(0, 1fr) 380px;
+      }
+      .frames-panel {
+        width: 380px;
+        min-width: 380px;
+      }
+    }
+
     .status-bar {
       padding: 8px 14px;
       border-top: 1px solid var(--border);
@@ -202,6 +262,20 @@
         flex-direction: column;
       }
       .sidebar {
+        width: 100%;
+        min-width: 0;
+      }
+      .viewer-grid {
+        grid-template-columns: 1fr;
+      }
+      .frames-panel {
+        width: 100%;
+        min-width: 0;
+      }
+      .frames-panel .table-wrap {
+        max-height: calc(var(--frame-header-height) + (var(--frame-row-height) * var(--frame-visible-rows)) + 2px);
+      }
+      .image-wrap {
         width: 100%;
         min-width: 0;
       }
@@ -290,6 +364,7 @@
     </aside>
 
     <main class="main">
+      <div class="viewer-grid">
       <section class="panel image-panel">
         <div class="image-wrap">
           <img id="frameImage" alt="FA frame">
@@ -297,7 +372,7 @@
         <div id="imageCaption" class="caption">FA frame</div>
       </section>
 
-      <section class="panel" style="flex:1; min-height: 260px;">
+      <section class="panel frames-panel">
         <div class="panel-title">Frames</div>
         <div class="table-wrap">
           <table>
@@ -315,6 +390,7 @@
           </table>
         </div>
       </section>
+      </div>
     </main>
   </div>
 
@@ -696,7 +772,7 @@
         renderRecentPaths(payload);
         applyPayload(payload);
         if (!payload.loaded) {
-          const lastPath = localStorage.getItem(STORAGE_KEYS.lastPath) || '';
+          const lastPath = localStorage.getItem(STORAGE_KEYS.lastPath) || (payload.recentPaths || [])[0] || '';
           if (lastPath && !els.pathInput.value.trim()) {
             els.pathInput.value = lastPath;
           }

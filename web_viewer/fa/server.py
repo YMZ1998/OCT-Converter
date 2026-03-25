@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .fa_state import FAViewerState
+from .state import FAViewerState
 
 
 class FAViewerRequestHandler(BaseHTTPRequestHandler):

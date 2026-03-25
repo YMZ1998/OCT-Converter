@@ -7,8 +7,8 @@ import webbrowser
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from .fa_server import build_handler
-from .fa_state import FAViewerState
+from .server import build_handler
+from .state import FAViewerState
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    html_path = Path(__file__).with_name("fa_web_viewer.html")
+    html_path = Path(__file__).with_name("viewer.html")
     state = FAViewerState()
 
     if args.path:

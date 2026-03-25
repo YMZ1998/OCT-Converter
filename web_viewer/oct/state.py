@@ -15,7 +15,7 @@ import numpy as np
 from oct_converter.image_types import FundusImageWithMetaData
 from oct_converter.readers import BOCT, Dicom, E2E, FDA, FDS, IMG, POCT
 
-from .oct_viewer_vendor_modes import (
+from .vendor_modes import (
     FILE_DIALOG_TYPES,
     NORMALIZED_SUPPORTED_EXTENSIONS,
     SHIWEI_UPLOAD_HINT,

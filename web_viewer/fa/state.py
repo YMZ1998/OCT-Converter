@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import sys
 import threading
 from dataclasses import dataclass
@@ -12,8 +13,8 @@ import numpy as np
 from PIL import Image
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS_DIR = PROJECT_ROOT / "scripts"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS_DIR = PROJECT_ROOT / "scripts" / "fa"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -44,6 +45,10 @@ FILE_DIALOG_TYPES = [
     ("Images", "*.jpg *.JPG *.png *.PNG"),
     ("All files", "*.*"),
 ]
+
+STATE_DIRECTORY = Path.home() / ".oct_converter"
+STATE_FILENAME = "fa_web_viewer_state.json"
+MAX_RECENT_PATHS = 8
 
 
 def to_jsonable(value: Any) -> Any:
@@ -171,7 +176,8 @@ class FAViewerState:
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.loaded_state: FALoadedState | None = None
-        self.recent_paths: list[str] = []
+        self.state_path = STATE_DIRECTORY / STATE_FILENAME
+        self.recent_paths: list[str] = self._load_recent_paths()
 
     def load(self, filepath: str, vendor_mode: str = VENDOR_AUTO) -> dict[str, Any]:
         path = Path(filepath).expanduser().resolve()
@@ -216,9 +222,11 @@ class FAViewerState:
         root.withdraw()
         root.attributes("-topmost", True)
         try:
+            initial_directory = self._get_initial_dialog_directory()
             selected = filedialog.askopenfilename(
                 title="Select a FA file",
                 filetypes=FILE_DIALOG_TYPES,
+                initialdir=str(initial_directory),
             )
         finally:
             root.destroy()
@@ -235,9 +243,11 @@ class FAViewerState:
         root.withdraw()
         root.attributes("-topmost", True)
         try:
+            initial_directory = self._get_initial_dialog_directory()
             selected = filedialog.askdirectory(
                 title="Select a FA dataset directory",
                 mustexist=True,
+                initialdir=str(initial_directory),
             )
         finally:
             root.destroy()
@@ -346,4 +356,61 @@ class FAViewerState:
             return
         self.recent_paths = [item for item in self.recent_paths if item != normalized]
         self.recent_paths.insert(0, normalized)
-        self.recent_paths = self.recent_paths[:8]
+        self.recent_paths = self.recent_paths[:MAX_RECENT_PATHS]
+        self._save_recent_paths()
+
+    def _load_recent_paths(self) -> list[str]:
+        try:
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return []
+        except Exception:
+            return []
+
+        recent_paths = payload.get("recent_paths", [])
+        if not isinstance(recent_paths, list):
+            return []
+
+        normalized_paths: list[str] = []
+        seen: set[str] = set()
+        for item in recent_paths:
+            if not isinstance(item, str):
+                continue
+            normalized = item.strip()
+            if not normalized or normalized in seen:
+                continue
+            normalized_paths.append(normalized)
+            seen.add(normalized)
+            if len(normalized_paths) >= MAX_RECENT_PATHS:
+                break
+        return normalized_paths
+
+    def _save_recent_paths(self) -> None:
+        payload = {
+            "recent_paths": self.recent_paths[:MAX_RECENT_PATHS],
+        }
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            self.state_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            return
+
+    def _get_initial_dialog_directory(self) -> Path:
+        candidate = ""
+        if self.loaded_state is not None:
+            candidate = self.loaded_state.source_path
+        elif self.recent_paths:
+            candidate = self.recent_paths[0]
+
+        if not candidate:
+            return Path.home()
+
+        path = Path(candidate).expanduser()
+        if path.is_dir():
+            return path
+        if path.parent.exists():
+            return path.parent
+        return Path.home()
