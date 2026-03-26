@@ -315,12 +315,12 @@ def load_tupai_oct_dataset(path: str | Path) -> dict[str, Any]:
             "width": int(volume_array.shape[2]),
             "height": int(volume_array.shape[1]),
         },
+        patient_name=patient_name,
+        patient_dob=patient_birth_date,
+        sex=patient_sex,
+        device_name=device_name,
+        scan_pattern=scan_pattern,
     )
-    oct_volume.patient_name = patient_name
-    oct_volume.patient_dob = patient_birth_date
-    oct_volume.sex = patient_sex
-    oct_volume.device_name = device_name
-    oct_volume.scan_pattern = scan_pattern
 
     fundus_image = FundusImageWithMetaData(
         image=np.asarray(fundus),
@@ -345,12 +345,12 @@ def load_tupai_oct_dataset(path: str | Path) -> dict[str, Any]:
             if fundus_spacing is not None
             else None
         ),
+        patient_name=patient_name,
+        patient_dob=patient_birth_date,
+        sex=patient_sex,
+        device_name=device_name,
+        scan_pattern=scan_pattern,
     )
-    fundus_image.patient_name = patient_name
-    fundus_image.patient_dob = patient_birth_date
-    fundus_image.sex = patient_sex
-    fundus_image.device_name = device_name
-    fundus_image.scan_pattern = scan_pattern
 
     return {
         "dataset_dir": str(dataset_dir),

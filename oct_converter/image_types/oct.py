@@ -27,6 +27,7 @@ class OCTVolumeWithMetaData(object):
         volume: all the volume's b-scans.
 
         patient_id: patient ID.
+        patient_name: patient full name.
         first_name: patient first name.
         surname: patient second name.
         sex: patient sex.
@@ -39,6 +40,8 @@ class OCTVolumeWithMetaData(object):
 
         contours: contours data.
         pixel_spacing: (x, y, z) pixel spacing in mm.
+        device_name: device / scanner name.
+        scan_pattern: scan pattern or protocol label.
         metadata: all metadata available in the OCT scan.
     """
 
@@ -58,16 +61,21 @@ class OCTVolumeWithMetaData(object):
         metadata: dict | None = None,
         header: dict | None = None,
         oct_header: dict | None = None,
+        patient_name: str | None = None,
+        device_name: str | None = None,
+        scan_pattern: str | None = None,
     ) -> None:
         # image
         self.volume = volume
 
         # patient data
         self.patient_id = patient_id
+        self.patient_name = patient_name
         self.first_name = first_name
         self.surname = surname
         self.sex = sex
         self.DOB = patient_dob
+        self.patient_dob = patient_dob
 
         # volume data
         self.volume_id = volume_id
@@ -75,6 +83,8 @@ class OCTVolumeWithMetaData(object):
         self.laterality = laterality
         self.num_slices = len(self.volume)
         self.contours = contours
+        self.device_name = device_name
+        self.scan_pattern = scan_pattern
 
         # geom data
         self.pixel_spacing = pixel_spacing

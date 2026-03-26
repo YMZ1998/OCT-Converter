@@ -685,8 +685,8 @@ def load_shiwei_oct_dataset(
             "paths": file_paths,
         },
         header=extract_basic_dicom_metadata(ds_bscan, include_paths=file_paths),
+        scan_pattern=extract_scan_pattern(ds_bscan) or extract_scan_pattern(ds_fundus),
     )
-    volume_object.scan_pattern = extract_scan_pattern(ds_bscan) or extract_scan_pattern(ds_fundus)
 
     fundus_object = FundusImageWithMetaData(
         image=fundus,
@@ -696,8 +696,8 @@ def load_shiwei_oct_dataset(
         patient_dob=extract_valid_patient_birth_date(ds_fundus),
         metadata=extract_basic_dicom_metadata(ds_fundus, include_paths=file_paths),
         pixel_spacing=extract_fundus_pixel_spacing(ds_fundus),
+        scan_pattern=extract_scan_pattern(ds_fundus) or extract_scan_pattern(ds_bscan),
     )
-    fundus_object.scan_pattern = extract_scan_pattern(ds_fundus) or extract_scan_pattern(ds_bscan)
 
     return {
         "volume": volume_object,

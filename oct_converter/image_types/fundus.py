@@ -23,8 +23,12 @@ class FundusImageWithMetaData(object):
         image: fundus image.
         laterality: left or right eye.
         patient_id: patient ID.
+        patient_name: patient full name.
         image_id: image ID.
         DOB: patient date of birth.
+        sex: patient sex.
+        device_name: device / scanner name.
+        scan_pattern: scan pattern or protocol label.
         metadata: all metadata parsed from the original file.
         pixel_spacing: [x, y] pixel spacing in mm
     """
@@ -38,12 +42,21 @@ class FundusImageWithMetaData(object):
         patient_dob: str | None = None,
         metadata: dict | None = None,
         pixel_spacing: list[float] | None = None,
+        patient_name: str | None = None,
+        sex: str | None = None,
+        device_name: str | None = None,
+        scan_pattern: str | None = None,
     ) -> None:
         self.image = image
         self.laterality = laterality
         self.patient_id = patient_id
+        self.patient_name = patient_name
         self.image_id = image_id
         self.DOB = patient_dob
+        self.patient_dob = patient_dob
+        self.sex = sex
+        self.device_name = device_name
+        self.scan_pattern = scan_pattern
         self.metadata = metadata
         self.pixel_spacing = pixel_spacing
 

@@ -352,9 +352,9 @@ class E2E(object):
                     contours=contour_data.get(key),
                     pixel_spacing=self.pixel_spacing,
                     metadata=metadata,
+                    device_name=_extract_metadata_device_name(metadata),
+                    scan_pattern=_extract_metadata_scan_pattern(metadata, key),
                 )
-                oct_volume.device_name = _extract_metadata_device_name(metadata)
-                oct_volume.scan_pattern = _extract_metadata_scan_pattern(metadata, key)
                 oct_volumes.append(oct_volume)
 
         return oct_volumes
@@ -472,9 +472,9 @@ class E2E(object):
                     else None,
                     metadata=metadata,
                     pixel_spacing=[scalex, scalex],
+                    device_name=_extract_metadata_device_name(metadata),
+                    scan_pattern=_extract_metadata_scan_pattern(metadata, key),
                 )
-                fundus_image.device_name = _extract_metadata_device_name(metadata)
-                fundus_image.scan_pattern = _extract_metadata_scan_pattern(metadata, key)
                 fundus_images.append(fundus_image)
 
         return fundus_images
