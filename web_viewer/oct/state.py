@@ -110,6 +110,75 @@ def as_list(value: Any) -> list[Any]:
     return [value]
 
 
+def normalized_lookup_key(value: Any) -> str:
+    return "".join(character for character in str(value).lower() if character.isalnum())
+
+
+def coerce_text_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace").replace("\x00", "").strip()
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.generic):
+        return str(value.item()).replace("\x00", "").strip()
+    if isinstance(value, (str, int, float, bool)):
+        return str(value).replace("\x00", "").strip()
+    if isinstance(value, (list, tuple)):
+        if value and all(isinstance(item, (int, np.integer)) for item in value):
+            try:
+                return bytes(int(item) for item in value).decode("utf-8", errors="replace").replace("\x00", "").strip()
+            except (TypeError, ValueError):
+                pass
+        parts = [coerce_text_value(item) for item in value]
+        return " ".join(part for part in parts if part).strip()
+    return ""
+
+
+def find_text_in_metadata(value: Any, candidate_keys: set[str], depth: int = 0) -> str:
+    if value is None or depth > 4:
+        return ""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if normalized_lookup_key(key) in candidate_keys:
+                text = coerce_text_value(item)
+                if text:
+                    return text
+        for item in value.values():
+            text = find_text_in_metadata(item, candidate_keys, depth + 1)
+            if text:
+                return text
+        return ""
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            text = find_text_in_metadata(item, candidate_keys, depth + 1)
+            if text:
+                return text
+        return ""
+    object_values = getattr(value, "__dict__", None)
+    if isinstance(object_values, dict):
+        return find_text_in_metadata(object_values, candidate_keys, depth + 1)
+    return ""
+
+
+def find_text_in_attributes(value: Any, candidate_attributes: tuple[str, ...]) -> str:
+    if value is None:
+        return ""
+    for attribute in candidate_attributes:
+        text = coerce_text_value(getattr(value, attribute, None))
+        if text:
+            return text
+    return ""
+
+
+def join_text_values(*values: Any) -> str:
+    parts = [coerce_text_value(value) for value in values]
+    return " ".join(part for part in parts if part).strip()
+
+
 def partition_bscan_metadata(
     bscan_data: list[dict[str, Any]],
     slice_counts: list[int],
@@ -1082,6 +1151,216 @@ class ViewerState:
             raise IndexError(f"Volume index out of range: {volume_index}")
         return dataset.volumes[volume_index]
 
+    def _extract_patient_name(self, volume: Any, *metadata_sources: Any) -> str:
+        patient_name = find_text_in_attributes(
+            volume,
+            (
+                "patient_name",
+                "patientName",
+                "patient_full_name",
+                "patientFullName",
+                "patient_display_name",
+                "patientDisplayName",
+            ),
+        )
+        if patient_name:
+            return patient_name
+
+        combined_name = join_text_values(
+            find_text_in_attributes(
+                volume,
+                (
+                    "patient_first_name",
+                    "patientFirstName",
+                    "first_name",
+                    "firstName",
+                    "given_name",
+                    "givenName",
+                    "forename",
+                    "name",
+                ),
+            ),
+            find_text_in_attributes(volume, ("mid_name", "midName", "middle_name", "middleName")),
+            find_text_in_attributes(
+                volume,
+                (
+                    "patient_last_name",
+                    "patientLastName",
+                    "last_name",
+                    "lastName",
+                    "family_name",
+                    "familyName",
+                    "surname",
+                ),
+            ),
+        )
+        if combined_name:
+            return combined_name
+
+        patient_name_keys = {
+            "patientname",
+            "patientsname",
+            "patientfullname",
+            "patientdisplayname",
+            "subjectname",
+            "subjectfullname",
+            "patientpersonname",
+            "name",
+        }
+        first_name_keys = {"patientfirstname", "firstname", "givenname", "forename"}
+        middle_name_keys = {"patientmiddlename", "middlename", "midname"}
+        last_name_keys = {"patientlastname", "lastname", "familyname", "surname"}
+
+        for source in metadata_sources:
+            patient_name = find_text_in_metadata(source, patient_name_keys)
+            if patient_name:
+                return patient_name
+
+            combined_name = join_text_values(
+                find_text_in_metadata(source, first_name_keys),
+                find_text_in_metadata(source, middle_name_keys),
+                find_text_in_metadata(source, last_name_keys),
+            )
+            if combined_name:
+                return combined_name
+        return ""
+
+    def _extract_patient_id(self, volume: Any, *metadata_sources: Any) -> str:
+        patient_id = find_text_in_attributes(volume, ("patient_id", "patientId", "subject_id", "subjectId"))
+        if patient_id:
+            return patient_id
+
+        patient_id_keys = {
+            "patientid",
+            "patientidentifier",
+            "patientnumber",
+            "subjectid",
+            "subjectidentifier",
+            "subjectnumber",
+        }
+        for source in metadata_sources:
+            patient_id = find_text_in_metadata(source, patient_id_keys)
+            if patient_id:
+                return patient_id
+        return ""
+
+    def _extract_acquisition_date(self, volume: Any, *metadata_sources: Any) -> str:
+        acquisition_date = coerce_text_value(getattr(volume, "acquisition_date", None))
+        if acquisition_date:
+            return acquisition_date
+
+        acquisition_date = find_text_in_attributes(
+            volume,
+            ("exam_date", "examDate", "study_date", "studyDate", "scan_date", "scanDate"),
+        )
+        if acquisition_date:
+            return acquisition_date
+
+        date_keys = {
+            "acquisitiondate",
+            "examdate",
+            "studydate",
+            "seriesdate",
+            "scandate",
+            "capturedate",
+            "contentdate",
+        }
+        for source in metadata_sources:
+            acquisition_date = find_text_in_metadata(source, date_keys)
+            if acquisition_date:
+                return acquisition_date
+        return ""
+
+    def _extract_device_name(self, volume: Any, *metadata_sources: Any) -> str:
+        manufacturer = find_text_in_attributes(
+            volume,
+            (
+                "manufacturer",
+                "device_manufacturer",
+                "deviceManufacturer",
+                "scanner_manufacturer",
+                "scannerManufacturer",
+            ),
+        )
+        model = find_text_in_attributes(
+            volume,
+            (
+                "model",
+                "model_name",
+                "modelName",
+                "device_model",
+                "deviceModel",
+                "scanner_model",
+                "scannerModel",
+            ),
+        )
+        device_name = join_text_values(manufacturer, model)
+        if device_name:
+            return device_name
+
+        device_name = find_text_in_attributes(
+            volume,
+            (
+                "device",
+                "device_name",
+                "deviceName",
+                "instrument",
+                "instrument_name",
+                "instrumentName",
+                "scanner",
+                "scanner_name",
+                "scannerName",
+                "system",
+                "system_name",
+                "systemName",
+            ),
+        )
+        if device_name:
+            return device_name
+
+        manufacturer_keys = {
+            "manufacturer",
+            "devicemanufacturer",
+            "scannermanufacturer",
+            "equipmentmanufacturer",
+        }
+        model_keys = {
+            "model",
+            "modelname",
+            "manufacturermodelname",
+            "devicemodel",
+            "devicemodelname",
+            "scannermodel",
+            "scannermodelname",
+            "equipmentmodel",
+            "equipmentmodelname",
+        }
+        device_keys = {
+            "device",
+            "devicename",
+            "instrument",
+            "instrumentname",
+            "scanner",
+            "scannername",
+            "machine",
+            "machinename",
+            "system",
+            "systemname",
+        }
+
+        for source in metadata_sources:
+            device_name = join_text_values(
+                find_text_in_metadata(source, manufacturer_keys),
+                find_text_in_metadata(source, model_keys),
+            )
+            if device_name:
+                return device_name
+
+            device_name = find_text_in_metadata(source, device_keys)
+            if device_name:
+                return device_name
+        return ""
+
     def _describe_volume(
         self,
         volume: Any,
@@ -1103,10 +1382,13 @@ class ViewerState:
         contour_names = sorted((getattr(volume, "contours", None) or {}).keys())
         volume_id = getattr(volume, "volume_id", None)
         laterality = getattr(volume, "laterality", None)
-        patient_id = getattr(volume, "patient_id", None)
         metadata = getattr(volume, "metadata", None)
         header = getattr(volume, "header", None)
         oct_header = getattr(volume, "oct_header", None)
+        patient_name = self._extract_patient_name(volume, metadata, header, oct_header)
+        patient_id = self._extract_patient_id(volume, metadata, header, oct_header)
+        acquisition_date = self._extract_acquisition_date(volume, metadata, header, oct_header)
+        device = self._extract_device_name(volume, metadata, header, oct_header)
         matched_fundus_index = (
             overlay_info.matched_fundus_index
             if overlay_info is not None
@@ -1129,8 +1411,10 @@ class ViewerState:
                 if display_width_units and display_height_units
                 else (width / height if height else None)
             ),
+            "patientName": patient_name,
             "patientId": patient_id or "",
-            "acquisitionDate": to_jsonable(getattr(volume, "acquisition_date", None)) or "",
+            "acquisitionDate": acquisition_date,
+            "device": device,
             "contourNames": contour_names,
             "contourCount": len(contour_names),
             "matchedFundusIndex": matched_fundus_index,
@@ -1155,8 +1439,10 @@ class ViewerState:
                     "width": width,
                     "height": height,
                     "pixel_spacing": getattr(volume, "pixel_spacing", None),
-                    "patient_id": getattr(volume, "patient_id", None),
-                    "acquisition_date": getattr(volume, "acquisition_date", None),
+                    "patient_name": patient_name,
+                    "patient_id": patient_id,
+                    "acquisition_date": acquisition_date,
+                    "device": device,
                     "metadata": metadata,
                     "header": header,
                     "oct_header": oct_header,

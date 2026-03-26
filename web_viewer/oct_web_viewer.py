@@ -9,6 +9,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from web_viewer.oct.viewer import main
 
-
+#netstat -ano | findstr :8765
+# taskkill /PID 12345 /F
 if __name__ == "__main__":
     main()

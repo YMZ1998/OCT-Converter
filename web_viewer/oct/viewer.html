@@ -530,6 +530,11 @@
         <div class="panel-header">Data Overview</div>
         <div class="panel-body">
           <div class="kv">
+            <div>姓名</div><div id="patientNameValue">-</div>
+            <div>ID</div><div id="patientIdValue">-</div>
+            <div>检查日期</div><div id="examDateValue">-</div>
+            <div>设备</div><div id="deviceValue">-</div>
+            <div>眼别</div><div id="lateralityValue">-</div>
             <div>Reader</div><div id="readerValue">-</div>
             <div>File Path</div><div id="pathValue">-</div>
             <div>Volume Count</div><div id="volumeCountValue">0</div>
@@ -751,6 +756,11 @@
       refreshButton: document.getElementById("refreshButton"),
       resetViewButton: document.getElementById("resetViewButton"),
       status: document.getElementById("status"),
+      patientNameValue: document.getElementById("patientNameValue"),
+      patientIdValue: document.getElementById("patientIdValue"),
+      examDateValue: document.getElementById("examDateValue"),
+      deviceValue: document.getElementById("deviceValue"),
+      lateralityValue: document.getElementById("lateralityValue"),
       readerValue: document.getElementById("readerValue"),
       pathValue: document.getElementById("pathValue"),
       volumeCountValue: document.getElementById("volumeCountValue"),
@@ -1886,6 +1896,11 @@
       const loaded = Boolean(state.data?.loaded);
       const volume = currentVolume();
 
+      elements.patientNameValue.textContent = loaded ? (volume?.patientName || "-") : "-";
+      elements.patientIdValue.textContent = loaded ? (volume?.patientId || "-") : "-";
+      elements.examDateValue.textContent = loaded ? (volume?.acquisitionDate || "-") : "-";
+      elements.deviceValue.textContent = loaded ? (volume?.device || state.data.reader || "-") : "-";
+      elements.lateralityValue.textContent = loaded ? (volume?.laterality || "-") : "-";
       elements.readerValue.textContent = loaded ? state.data.reader : "-";
       elements.pathValue.textContent = loaded ? state.data.sourcePath : "-";
       elements.volumeCountValue.textContent = String(state.data?.volumes?.length || 0);
@@ -3249,6 +3264,7 @@
       if (!elements.recentSelect.value) return;
       elements.pathInput.value = elements.recentSelect.value;
       saveUiState();
+      loadPath();
     });
     elements.volumeSelect.addEventListener("change", () => {
       state.volumeIndex = Number(elements.volumeSelect.value);
