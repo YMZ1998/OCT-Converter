@@ -4,6 +4,7 @@ import json
 import shutil
 import tempfile
 import threading
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -177,6 +178,196 @@ def find_text_in_attributes(value: Any, candidate_attributes: tuple[str, ...]) -
 def join_text_values(*values: Any) -> str:
     parts = [coerce_text_value(value) for value in values]
     return " ".join(part for part in parts if part).strip()
+
+
+def resolve_topcon_input_files(path: str | Path) -> list[Path]:
+    candidate_path = Path(path).expanduser()
+    if not candidate_path.exists():
+        return []
+
+    topcon_extensions = {".fda", ".fds"}
+    if candidate_path.is_file():
+        return [candidate_path.resolve()] if candidate_path.suffix.lower() in topcon_extensions else []
+
+    matched_files = [
+        child.resolve()
+        for child in candidate_path.rglob("*")
+        if child.is_file() and child.suffix.lower() in topcon_extensions
+    ]
+    return sorted(matched_files, key=lambda item: str(item).lower())
+
+
+def decode_topcon_filelist_text(field_bytes: bytes) -> str:
+    raw = field_bytes.split(b"\x00", 1)[0].strip(b"\x00 ").strip()
+    if not raw:
+        return ""
+    for encoding in ("gbk", "utf-8", "latin1"):
+        try:
+            text = raw.decode(encoding, errors="ignore").replace("\x00", "").strip()
+        except Exception:
+            continue
+        if text:
+            return text
+    return ""
+
+
+def parse_flexible_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.replace(microsecond=0)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+
+    text = coerce_text_value(value)
+    if not text:
+        return None
+
+    for candidate in (text, text.replace("T", " ")):
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y/%m/%d %H:%M:%S",
+            "%Y-%m-%d",
+            "%Y/%m/%d",
+        ):
+            try:
+                return datetime.strptime(candidate, fmt)
+            except ValueError:
+                continue
+    return None
+
+
+def normalize_datetime_match_key(value: Any) -> str:
+    parsed = parse_flexible_datetime(value)
+    return parsed.strftime("%Y-%m-%d %H:%M:%S") if parsed is not None else ""
+
+
+def locate_topcon_filelist(path: Path) -> Path | None:
+    candidate = path if path.is_dir() else path.parent
+    for directory in (candidate, *candidate.parents):
+        filelist_path = directory / "FILELIST"
+        if filelist_path.is_file():
+            return filelist_path.resolve()
+    return None
+
+
+def parse_topcon_filelist_records(filelist_path: Path) -> list[dict[str, str]]:
+    try:
+        data = filelist_path.read_bytes()
+    except OSError:
+        return []
+
+    header_size = 16
+    record_size = 1532
+    if len(data) <= header_size or (len(data) - header_size) % record_size != 0:
+        return []
+    if not data.startswith(b"FOCTARC"):
+        return []
+
+    records: list[dict[str, str]] = []
+    record_count = (len(data) - header_size) // record_size
+    for index in range(record_count):
+        start = header_size + index * record_size
+        record = data[start : start + record_size]
+        patient_id = decode_topcon_filelist_text(record[0:20])
+        primary_name = decode_topcon_filelist_text(record[20:44])
+        secondary_name = decode_topcon_filelist_text(record[44:68])
+        sex = decode_topcon_filelist_text(record[72:76])
+        birth_date = decode_topcon_filelist_text(record[76:108])
+        exam_id = decode_topcon_filelist_text(record[620:640]) or patient_id
+        acquisition_date = decode_topcon_filelist_text(record[640:652])
+        acquisition_time = decode_topcon_filelist_text(record[652:664])
+        acquired_at = decode_topcon_filelist_text(record[836:860])
+        scan_pattern = decode_topcon_filelist_text(record[976:992])
+        laterality = decode_topcon_filelist_text(record[992:996]).upper()
+        device = decode_topcon_filelist_text(record[1408:1440])
+
+        records.append(
+            {
+                "recordIndex": str(index),
+                "patientId": patient_id,
+                "patientName": primary_name or secondary_name,
+                "patientNameAlt": secondary_name if secondary_name and secondary_name != primary_name else "",
+                "sex": sex,
+                "birthDate": birth_date,
+                "examId": exam_id,
+                "acquisitionDate": acquisition_date,
+                "acquisitionTime": acquisition_time,
+                "acquiredAt": acquired_at or join_text_values(acquisition_date, acquisition_time),
+                "scanPattern": scan_pattern,
+                "laterality": laterality,
+                "device": device,
+                "filelistPath": str(filelist_path),
+            }
+        )
+    return records
+
+
+def contains_cjk_text(value: str) -> bool:
+    return any("\u4e00" <= character <= "\u9fff" for character in value)
+
+
+def is_placeholder_topcon_name(last_name: str, first_name: str = "") -> bool:
+    last_text = coerce_text_value(last_name)
+    first_text = coerce_text_value(first_name)
+    combined = join_text_values(last_text, first_text)
+    if not combined:
+        return True
+    if contains_cjk_text(combined):
+        return False
+    normalized_first = "".join(character for character in first_text.upper() if character.isalnum())
+    normalized_last = "".join(character for character in last_text.upper() if character.isalnum())
+    if normalized_first in {"X", "XX", "XXX"}:
+        return True
+    if normalized_last and any(character.isdigit() for character in normalized_last):
+        return True
+    return False
+
+
+def locate_topcon_studydrive_dir(path: Path) -> Path | None:
+    candidate = path if path.is_dir() else path.parent
+    for directory in (candidate, *candidate.parents):
+        study_dir = directory / "studyDriveLink"
+        if study_dir.is_dir():
+            return study_dir.resolve()
+    return None
+
+
+def parse_topcon_studydrive_records(study_dir: Path) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for xml_path in sorted(study_dir.glob("*.xml"), key=lambda item: item.name.lower()):
+        try:
+            root = ET.parse(xml_path).getroot()
+        except Exception:
+            continue
+
+        for oct_node in root.findall("Oct"):
+            patient_node = oct_node.find("Patient")
+            last_name = coerce_text_value(patient_node.findtext("LastName") if patient_node is not None else "")
+            first_name = coerce_text_value(patient_node.findtext("FirstName") if patient_node is not None else "")
+            birth_date = coerce_text_value(patient_node.findtext("BirthDate") if patient_node is not None else "")
+            patient_id = coerce_text_value(patient_node.findtext("ID") if patient_node is not None else "")
+            date_text = coerce_text_value(oct_node.findtext("Date"))
+            time_text = coerce_text_value(oct_node.findtext("Time"))
+
+            records.append(
+                {
+                    "datasetId": coerce_text_value(oct_node.findtext("DatasetID")),
+                    "sessionId": coerce_text_value(oct_node.findtext("SessionID")),
+                    "patientId": patient_id,
+                    "lastName": last_name,
+                    "firstName": first_name,
+                    "patientName": join_text_values(last_name, first_name),
+                    "birthDate": birth_date,
+                    "sex": coerce_text_value(patient_node.findtext("Sex") if patient_node is not None else ""),
+                    "scanPattern": coerce_text_value(oct_node.findtext("ScanMode")),
+                    "laterality": {"1": "L", "2": "R"}.get(coerce_text_value(oct_node.findtext("LREye")), ""),
+                    "device": coerce_text_value(oct_node.findtext("ProductName")),
+                    "acquisitionDate": date_text,
+                    "acquisitionTime": time_text,
+                    "acquiredAt": join_text_values(date_text, time_text),
+                    "xmlPath": str(xml_path),
+                }
+            )
+    return records
 
 
 def partition_bscan_metadata(
@@ -552,7 +743,7 @@ class ViewerState:
         root.withdraw()
         root.attributes("-topmost", True)
         try:
-            if normalized_mode in {"shiwei", "tupai"}:
+            if normalized_mode in {"shiwei", "tupai", "topcon"}:
                 selected = filedialog.askdirectory(
                     title="Select an OCT dataset directory",
                     mustexist=True,
@@ -705,6 +896,16 @@ class ViewerState:
             if is_supported_suffix_for_vendor(path, normalized_mode):
                 return
             raise ValueError(build_vendor_validation_error(path, normalized_mode))
+        if normalized_mode == "topcon":
+            if path.is_dir():
+                if resolve_topcon_input_files(path):
+                    return
+                raise ValueError(
+                    "Topcon mode requires a `.fda` / `.fds` file, or a directory containing those files."
+                )
+            if is_supported_suffix_for_vendor(path, normalized_mode):
+                return
+            raise ValueError(build_vendor_validation_error(path, normalized_mode))
         if path.is_dir():
             label = VENDOR_MODE_LABELS.get(normalized_mode, normalized_mode)
             raise ValueError(f"Selected vendor mode '{label}' requires choosing a file, not a directory.")
@@ -744,6 +945,9 @@ class ViewerState:
         zeiss_dataset = self._try_load_zeiss_dataset(path, vendor_mode=vendor_mode)
         if zeiss_dataset is not None:
             return self._build_zeiss_loaded_dataset(zeiss_dataset, source_meta)
+        topcon_dataset = self._try_load_topcon_dataset(path, vendor_mode=vendor_mode, source_meta=source_meta)
+        if topcon_dataset is not None:
+            return topcon_dataset
         return self._build_reader_loaded_dataset(path, source_meta)
 
     def _build_tupai_loaded_dataset(
@@ -810,12 +1014,282 @@ class ViewerState:
             raise ValueError("No OCT volumes were extracted from this file.")
 
         fundus_images = as_list(self._safe_read_fundus(reader))
+        self._enrich_topcon_metadata_from_filelist(path, reader, volumes, fundus_images)
         overlay_infos = self._build_overlay_infos(reader, volumes, fundus_images)
         return LoadedDataset(
             source_path=source_meta["source_path"],
             source_kind=source_meta["source_kind"],
             recent_path=source_meta["recent_path"],
             reader_name=reader.__class__.__name__,
+            volumes=volumes,
+            fundus_images=fundus_images,
+            overlay_infos=overlay_infos,
+        )
+
+    def _enrich_topcon_metadata_from_filelist(
+        self,
+        path: Path,
+        reader: Any,
+        volumes: list[Any],
+        fundus_images: list[Any],
+    ) -> None:
+        if not isinstance(reader, (FDA, FDS)):
+            return
+
+        filelist_path = locate_topcon_filelist(path)
+        if filelist_path is None:
+            return
+
+        filelist_records = parse_topcon_filelist_records(filelist_path)
+        if not filelist_records:
+            return
+
+        records_by_key: dict[tuple[str, str], list[dict[str, str]]] = {}
+        for record in filelist_records:
+            key = (
+                normalize_datetime_match_key(record.get("acquiredAt", "")),
+                coerce_text_value(record.get("laterality", "")).upper(),
+            )
+            records_by_key.setdefault(key, []).append(record)
+
+        matched_records: list[dict[str, str]] = []
+        for volume in volumes:
+            record = self._match_topcon_filelist_record(records_by_key, volume)
+            if record is None:
+                continue
+            matched_records.append(record)
+            self._apply_topcon_filelist_record(volume, record)
+
+        default_record = matched_records[0] if matched_records else None
+        for fundus in fundus_images:
+            record = self._match_topcon_filelist_record(records_by_key, fundus) or default_record
+            if record is None:
+                continue
+            self._apply_topcon_filelist_record(fundus, record)
+
+        self._enrich_topcon_metadata_from_studydrive(path, volumes, fundus_images)
+
+    def _enrich_topcon_metadata_from_studydrive(
+        self,
+        path: Path,
+        volumes: list[Any],
+        fundus_images: list[Any],
+    ) -> None:
+        study_dir = locate_topcon_studydrive_dir(path)
+        if study_dir is None:
+            return
+
+        study_records = parse_topcon_studydrive_records(study_dir)
+        if not study_records:
+            return
+
+        dataset_records: dict[str, dict[str, str]] = {}
+        for record in study_records:
+            for key in (record.get("datasetId", ""), record.get("sessionId", "")):
+                normalized_key = coerce_text_value(key)
+                if normalized_key:
+                    dataset_records[normalized_key] = record
+
+        canonical_cjk_names_by_birth_date: dict[str, str] = {}
+        cjk_names_by_birth_date: dict[str, set[str]] = {}
+        for record in study_records:
+            patient_name = coerce_text_value(record.get("patientName", ""))
+            birth_date = coerce_text_value(record.get("birthDate", ""))
+            if not patient_name or not birth_date or not contains_cjk_text(patient_name):
+                continue
+            cjk_names_by_birth_date.setdefault(birth_date, set()).add(patient_name)
+        for birth_date, names in cjk_names_by_birth_date.items():
+            if len(names) == 1:
+                canonical_cjk_names_by_birth_date[birth_date] = next(iter(names))
+
+        dataset_id = path.stem
+        record = dataset_records.get(dataset_id)
+        for item in [*volumes, *fundus_images]:
+            self._apply_topcon_studydrive_record(item, record, canonical_cjk_names_by_birth_date)
+
+    def _match_topcon_filelist_record(
+        self,
+        records_by_key: dict[tuple[str, str], list[dict[str, str]]],
+        target: Any,
+    ) -> dict[str, str] | None:
+        acquisition_value = getattr(target, "acquisition_date", None)
+        laterality = coerce_text_value(getattr(target, "laterality", None)).upper()
+        key = (normalize_datetime_match_key(acquisition_value), laterality)
+        matches = records_by_key.get(key) or []
+        if matches:
+            return matches.pop(0)
+        return None
+
+    def _apply_topcon_filelist_record(self, target: Any, record: dict[str, str]) -> None:
+        patient_name = record.get("patientName", "")
+        patient_id = record.get("patientId", "")
+        device = record.get("device", "")
+        birth_date = record.get("birthDate", "")
+        sex = record.get("sex", "")
+        laterality = record.get("laterality", "")
+        scan_pattern = record.get("scanPattern", "")
+
+        if patient_name and not coerce_text_value(getattr(target, "patient_name", None)):
+            setattr(target, "patient_name", patient_name)
+        if patient_id and not coerce_text_value(getattr(target, "patient_id", None)):
+            setattr(target, "patient_id", patient_id)
+        if device and not coerce_text_value(getattr(target, "device_name", None)):
+            setattr(target, "device_name", device)
+        if scan_pattern and not coerce_text_value(getattr(target, "scan_pattern", None)):
+            setattr(target, "scan_pattern", scan_pattern)
+        if sex and not coerce_text_value(getattr(target, "sex", None)):
+            setattr(target, "sex", sex)
+        if birth_date:
+            if hasattr(target, "patient_dob") and not coerce_text_value(getattr(target, "patient_dob", None)):
+                setattr(target, "patient_dob", birth_date)
+            if hasattr(target, "DOB") and not coerce_text_value(getattr(target, "DOB", None)):
+                setattr(target, "DOB", birth_date)
+        if laterality and hasattr(target, "laterality") and not coerce_text_value(getattr(target, "laterality", None)):
+            setattr(target, "laterality", laterality)
+
+        metadata = getattr(target, "metadata", None)
+        metadata_dict = dict(metadata) if isinstance(metadata, dict) else {}
+        metadata_dict["topcon_filelist"] = dict(record)
+        setattr(target, "metadata", metadata_dict)
+
+    def _apply_topcon_studydrive_record(
+        self,
+        target: Any,
+        record: dict[str, str] | None,
+        canonical_cjk_names_by_birth_date: dict[str, str],
+    ) -> None:
+        if record is None:
+            return
+
+        metadata = getattr(target, "metadata", None)
+        metadata_dict = dict(metadata) if isinstance(metadata, dict) else {}
+        metadata_dict["topcon_studydrive"] = dict(record)
+
+        record_name = coerce_text_value(record.get("patientName", ""))
+        record_birth_date = coerce_text_value(record.get("birthDate", ""))
+        canonical_name = canonical_cjk_names_by_birth_date.get(record_birth_date, "")
+        patient_name = record_name
+        if canonical_name and is_placeholder_topcon_name(record.get("lastName", ""), record.get("firstName", "")):
+            patient_name = canonical_name
+
+        if patient_name:
+            setattr(target, "patient_name", patient_name)
+        if record.get("patientId"):
+            setattr(target, "patient_id", record["patientId"])
+        if record.get("device"):
+            setattr(target, "device_name", record["device"])
+        if record.get("scanPattern"):
+            setattr(target, "scan_pattern", record["scanPattern"])
+        if record.get("sex"):
+            setattr(target, "sex", record["sex"])
+        if record.get("birthDate"):
+            if hasattr(target, "patient_dob"):
+                setattr(target, "patient_dob", record["birthDate"])
+            if hasattr(target, "DOB"):
+                setattr(target, "DOB", record["birthDate"])
+        if record.get("laterality") and hasattr(target, "laterality"):
+            setattr(target, "laterality", record["laterality"])
+
+        setattr(target, "metadata", metadata_dict)
+
+    def _try_load_topcon_dataset(
+        self,
+        path: Path,
+        *,
+        vendor_mode: str = "auto",
+        source_meta: dict[str, str],
+    ) -> LoadedDataset | None:
+        normalized_mode = normalize_vendor_mode(vendor_mode)
+        if not path.is_dir():
+            return None
+        if normalized_mode not in {"auto", "topcon"}:
+            return None
+
+        input_files = resolve_topcon_input_files(path)
+        if not input_files:
+            if normalized_mode == "topcon":
+                raise ValueError(
+                    "Topcon mode requires a `.fda` / `.fds` file, or a directory containing those files."
+                )
+            return None
+        return self._build_topcon_loaded_dataset(input_files, source_meta)
+
+    def _build_topcon_loaded_dataset(
+        self,
+        input_files: list[Path],
+        source_meta: dict[str, str],
+    ) -> LoadedDataset:
+        volumes: list[Any] = []
+        fundus_images: list[Any] = []
+        overlay_infos: list[OverlayInfo] = []
+        total_files = len(input_files)
+
+        for file_path in input_files:
+            part_dataset = self._build_reader_loaded_dataset(
+                file_path,
+                {
+                    "source_path": str(file_path),
+                    "source_kind": source_meta["source_kind"],
+                    "recent_path": str(file_path),
+                },
+            )
+            file_label = file_path.stem
+            fundus_offset = len(fundus_images)
+
+            for volume in part_dataset.volumes:
+                setattr(volume, "source_file", str(file_path))
+                if total_files > 1:
+                    existing_volume_id = coerce_text_value(getattr(volume, "volume_id", None))
+                    setattr(
+                        volume,
+                        "volume_id",
+                        f"{file_label}/{existing_volume_id}" if existing_volume_id else file_label,
+                    )
+                volumes.append(volume)
+
+            for fundus in part_dataset.fundus_images:
+                setattr(fundus, "source_file", str(file_path))
+                if total_files > 1:
+                    existing_image_id = coerce_text_value(getattr(fundus, "image_id", None))
+                    setattr(
+                        fundus,
+                        "image_id",
+                        f"{file_label}/{existing_image_id}" if existing_image_id else file_label,
+                    )
+                fundus_images.append(fundus)
+
+            for overlay_info in part_dataset.overlay_infos:
+                matched_index = overlay_info.matched_fundus_index
+                matched_label = overlay_info.matched_fundus_label
+                if matched_index >= 0:
+                    matched_index += fundus_offset
+                if total_files > 1 and matched_label:
+                    matched_label = f"{file_label}/{matched_label}"
+                elif total_files > 1 and matched_index >= 0:
+                    matched_label = file_label
+                overlay_infos.append(
+                    OverlayInfo(
+                        matched_fundus_index=matched_index,
+                        matched_fundus_label=matched_label,
+                        fundus_match_mode=overlay_info.fundus_match_mode,
+                        overlay_mode=overlay_info.overlay_mode,
+                        projection_mode=overlay_info.projection_mode,
+                        localizer_mode=overlay_info.localizer_mode,
+                        warning=overlay_info.warning,
+                        scan_segments=overlay_info.scan_segments,
+                        bounds=overlay_info.bounds,
+                    )
+                )
+
+        if not volumes:
+            raise ValueError("No Topcon OCT volumes were extracted from the selected directory.")
+
+        dataset_path = source_meta["source_path"]
+        return LoadedDataset(
+            source_path=dataset_path,
+            source_kind=source_meta["source_kind"],
+            recent_path=dataset_path,
+            reader_name=f"TopconDirectoryDataset ({total_files} files)",
             volumes=volumes,
             fundus_images=fundus_images,
             overlay_infos=overlay_infos,
@@ -1271,6 +1745,63 @@ class ViewerState:
                 return acquisition_date
         return ""
 
+    def _extract_birth_date(self, volume: Any, *metadata_sources: Any) -> str:
+        birth_date = find_text_in_attributes(
+            volume,
+            (
+                "patient_dob",
+                "patientDob",
+                "DOB",
+                "dob",
+                "birth_date",
+                "birthDate",
+            ),
+        )
+        if birth_date:
+            return birth_date
+
+        birth_date_keys = {
+            "birthdate",
+            "dateofbirth",
+            "patientdob",
+            "patientbirthdate",
+            "dob",
+        }
+        for source in metadata_sources:
+            birth_date = find_text_in_metadata(source, birth_date_keys)
+            if birth_date:
+                return birth_date
+        return ""
+
+    def _extract_patient_sex(self, volume: Any, *metadata_sources: Any) -> str:
+        sex = find_text_in_attributes(
+            volume,
+            (
+                "sex",
+                "patient_sex",
+                "patientSex",
+                "gender",
+                "patient_gender",
+                "patientGender",
+            ),
+        )
+        if sex:
+            return sex
+
+        sex_keys = {
+            "sex",
+            "gender",
+            "patientsex",
+            "patientgender",
+            "subjectsex",
+            "subjectgender",
+        }
+        for source in metadata_sources:
+            sex = find_text_in_metadata(source, sex_keys)
+            if sex:
+                return sex
+        return ""
+
     def _extract_device_name(self, volume: Any, *metadata_sources: Any) -> str:
         manufacturer = find_text_in_attributes(
             volume,
@@ -1361,6 +1892,37 @@ class ViewerState:
                 return device_name
         return ""
 
+    def _extract_scan_pattern(self, volume: Any, *metadata_sources: Any) -> str:
+        scan_pattern = find_text_in_attributes(
+            volume,
+            (
+                "scan_pattern",
+                "scanPattern",
+                "scan_type",
+                "scanType",
+                "protocol_name",
+                "protocolName",
+                "pattern_name",
+                "patternName",
+            ),
+        )
+        if scan_pattern:
+            return scan_pattern
+
+        scan_pattern_keys = {
+            "scanpattern",
+            "scantype",
+            "protocolname",
+            "scanprotocol",
+            "patternname",
+            "capturelabel",
+        }
+        for source in metadata_sources:
+            scan_pattern = find_text_in_metadata(source, scan_pattern_keys)
+            if scan_pattern:
+                return scan_pattern
+        return ""
+
     def _describe_volume(
         self,
         volume: Any,
@@ -1388,7 +1950,10 @@ class ViewerState:
         patient_name = self._extract_patient_name(volume, metadata, header, oct_header)
         patient_id = self._extract_patient_id(volume, metadata, header, oct_header)
         acquisition_date = self._extract_acquisition_date(volume, metadata, header, oct_header)
+        birth_date = self._extract_birth_date(volume, metadata, header, oct_header)
+        patient_sex = self._extract_patient_sex(volume, metadata, header, oct_header)
         device = self._extract_device_name(volume, metadata, header, oct_header)
+        scan_pattern = self._extract_scan_pattern(volume, metadata, header, oct_header)
         matched_fundus_index = (
             overlay_info.matched_fundus_index
             if overlay_info is not None
@@ -1413,8 +1978,11 @@ class ViewerState:
             ),
             "patientName": patient_name,
             "patientId": patient_id or "",
+            "birthDate": birth_date,
+            "sex": patient_sex,
             "acquisitionDate": acquisition_date,
             "device": device,
+            "scanPattern": scan_pattern,
             "contourNames": contour_names,
             "contourCount": len(contour_names),
             "matchedFundusIndex": matched_fundus_index,
@@ -1441,8 +2009,11 @@ class ViewerState:
                     "pixel_spacing": getattr(volume, "pixel_spacing", None),
                     "patient_name": patient_name,
                     "patient_id": patient_id,
+                    "birth_date": birth_date,
+                    "sex": patient_sex,
                     "acquisition_date": acquisition_date,
                     "device": device,
+                    "scan_pattern": scan_pattern,
                     "metadata": metadata,
                     "header": header,
                     "oct_header": oct_header,

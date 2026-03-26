@@ -532,9 +532,12 @@
           <div class="kv">
             <div>姓名</div><div id="patientNameValue">-</div>
             <div>ID</div><div id="patientIdValue">-</div>
+            <div>出生日期</div><div id="birthDateValue">-</div>
+            <div>性别</div><div id="sexValue">-</div>
             <div>检查日期</div><div id="examDateValue">-</div>
             <div>设备</div><div id="deviceValue">-</div>
             <div>眼别</div><div id="lateralityValue">-</div>
+            <div>扫描类型</div><div id="scanPatternValue">-</div>
             <div>Reader</div><div id="readerValue">-</div>
             <div>File Path</div><div id="pathValue">-</div>
             <div>Volume Count</div><div id="volumeCountValue">0</div>
@@ -758,9 +761,12 @@
       status: document.getElementById("status"),
       patientNameValue: document.getElementById("patientNameValue"),
       patientIdValue: document.getElementById("patientIdValue"),
+      birthDateValue: document.getElementById("birthDateValue"),
+      sexValue: document.getElementById("sexValue"),
       examDateValue: document.getElementById("examDateValue"),
       deviceValue: document.getElementById("deviceValue"),
       lateralityValue: document.getElementById("lateralityValue"),
+      scanPatternValue: document.getElementById("scanPatternValue"),
       readerValue: document.getElementById("readerValue"),
       pathValue: document.getElementById("pathValue"),
       volumeCountValue: document.getElementById("volumeCountValue"),
@@ -836,7 +842,7 @@
       topcon: {
         label: "Topcon FDA/FDS",
         accept: ".fda,.FDA,.fds,.FDS",
-        pathHint: "Enter Topcon FDA/FDS file path, e.g. D:\data\sample.fda",
+        pathHint: "Enter a Topcon FDA/FDS file path, or a directory containing all .fda / .fds files.",
         allowUpload: true,
       },
       tupai: {
@@ -1024,7 +1030,7 @@
     }
 
     function usesDirectoryPicker(mode) {
-      return mode === "shiwei" || mode === "tupai";
+      return mode === "shiwei" || mode === "tupai" || mode === "topcon";
     }
 
     function syncVendorModeButtons() {
@@ -1895,12 +1901,23 @@
     function renderState() {
       const loaded = Boolean(state.data?.loaded);
       const volume = currentVolume();
+      const formatSexValue = (value) => {
+        const normalized = String(value || "").trim().toUpperCase();
+        if (!normalized) return "-";
+        if (normalized === "M" || normalized === "MALE" || normalized === "男") return "男";
+        if (normalized === "F" || normalized === "FEMALE" || normalized === "女") return "女";
+        if (normalized === "O" || normalized === "OTHER" || normalized === "其他") return "其他";
+        return String(value);
+      };
 
       elements.patientNameValue.textContent = loaded ? (volume?.patientName || "-") : "-";
       elements.patientIdValue.textContent = loaded ? (volume?.patientId || "-") : "-";
+      elements.birthDateValue.textContent = loaded ? (volume?.birthDate || "-") : "-";
+      elements.sexValue.textContent = loaded ? formatSexValue(volume?.sex) : "-";
       elements.examDateValue.textContent = loaded ? (volume?.acquisitionDate || "-") : "-";
       elements.deviceValue.textContent = loaded ? (volume?.device || state.data.reader || "-") : "-";
       elements.lateralityValue.textContent = loaded ? (volume?.laterality || "-") : "-";
+      elements.scanPatternValue.textContent = loaded ? (volume?.scanPattern || "-") : "-";
       elements.readerValue.textContent = loaded ? state.data.reader : "-";
       elements.pathValue.textContent = loaded ? state.data.sourcePath : "-";
       elements.volumeCountValue.textContent = String(state.data?.volumes?.length || 0);

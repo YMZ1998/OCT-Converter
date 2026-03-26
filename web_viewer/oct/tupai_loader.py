@@ -16,6 +16,28 @@ _TUPAI_OCT_FILENAME = "OCT.dcm"
 _TUPAI_FUNDUS_FILENAME = "Fundus.dcm"
 
 
+def _clean_dicom_text(value: Any) -> str:
+    """Converts DICOM values into a trimmed string."""
+
+    if value is None:
+        return ""
+    if hasattr(value, "value"):
+        value = value.value
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    return str(value).strip()
+
+
+def _first_dicom_text(*values: Any) -> str:
+    """Returns the first non-empty DICOM text value."""
+
+    for value in values:
+        text = _clean_dicom_text(value)
+        if text:
+            return text
+    return ""
+
+
 def _find_case_insensitive_file(directory: Path, target_name: str) -> Path | None:
     """Finds a file in a directory using a case-insensitive filename match."""
 
@@ -85,6 +107,20 @@ def _extract_laterality(dataset: Any) -> str | None:
 def _parse_acquisition_datetime(dataset: Any) -> datetime | None:
     """Parses acquisition date and time from a DICOM dataset."""
 
+    date_time_value = getattr(dataset, "AcquisitionDateTime", None) or getattr(
+        dataset, "ContentDateTime", None
+    )
+    date_time_text = "".join(
+        character
+        for character in _clean_dicom_text(date_time_value).split(".", 1)[0]
+        if character.isdigit()
+    )
+    if len(date_time_text) >= 14:
+        try:
+            return datetime.strptime(date_time_text[:14], "%Y%m%d%H%M%S")
+        except ValueError:
+            pass
+
     date_value = getattr(dataset, "AcquisitionDate", None) or getattr(
         dataset, "ContentDate", None
     )
@@ -122,6 +158,62 @@ def _sanitize_segments(
             )
         )
     return segments
+
+
+def _extract_patient_name(primary: Any, fallback: Any) -> str:
+    """Extracts patient name from Tupai DICOM datasets."""
+
+    return _first_dicom_text(
+        getattr(primary, "PatientName", None),
+        getattr(fallback, "PatientName", None),
+    )
+
+
+def _extract_patient_birth_date(primary: Any, fallback: Any) -> str:
+    """Extracts patient birth date from Tupai DICOM datasets."""
+
+    return _first_dicom_text(
+        getattr(primary, "PatientBirthDate", None),
+        getattr(fallback, "PatientBirthDate", None),
+    )
+
+
+def _extract_patient_sex(primary: Any, fallback: Any) -> str:
+    """Extracts patient sex from Tupai DICOM datasets."""
+
+    return _first_dicom_text(
+        getattr(primary, "PatientSex", None),
+        getattr(fallback, "PatientSex", None),
+    )
+
+
+def _extract_device_name(primary: Any, fallback: Any) -> str:
+    """Extracts device name from Tupai DICOM datasets."""
+
+    manufacturer = _first_dicom_text(
+        getattr(primary, "Manufacturer", None),
+        getattr(fallback, "Manufacturer", None),
+    )
+    model = _first_dicom_text(
+        getattr(primary, "ManufacturerModelName", None),
+        getattr(fallback, "ManufacturerModelName", None),
+    )
+    if manufacturer and model and model.lower() not in manufacturer.lower():
+        return f"{manufacturer} {model}"
+    return manufacturer or model
+
+
+def _extract_scan_pattern(primary: Any, fallback: Any) -> str:
+    """Extracts scan pattern from Tupai DICOM datasets."""
+
+    return _first_dicom_text(
+        getattr(primary, "ProtocolName", None),
+        getattr(fallback, "ProtocolName", None),
+        getattr(primary, "StudyDescription", None),
+        getattr(fallback, "StudyDescription", None),
+        getattr(primary, "SeriesDescription", None),
+        getattr(fallback, "SeriesDescription", None),
+    )
 
 
 def load_tupai_oct_dataset(path: str | Path) -> dict[str, Any]:
@@ -172,10 +264,18 @@ def load_tupai_oct_dataset(path: str | Path) -> dict[str, Any]:
         ]
 
     laterality = _extract_laterality(ds_bscan) or _extract_laterality(ds_fundus)
-    patient_id = getattr(ds_bscan, "PatientID", None) or getattr(
-        ds_fundus, "PatientID", None
+    patient_id = _first_dicom_text(
+        getattr(ds_bscan, "PatientID", None),
+        getattr(ds_fundus, "PatientID", None),
     )
-    acquisition_date = _parse_acquisition_datetime(ds_bscan)
+    patient_name = _extract_patient_name(ds_bscan, ds_fundus)
+    patient_birth_date = _extract_patient_birth_date(ds_bscan, ds_fundus)
+    patient_sex = _extract_patient_sex(ds_bscan, ds_fundus)
+    device_name = _extract_device_name(ds_bscan, ds_fundus)
+    scan_pattern = _extract_scan_pattern(ds_bscan, ds_fundus)
+    acquisition_date = _parse_acquisition_datetime(ds_bscan) or _parse_acquisition_datetime(
+        ds_fundus
+    )
 
     oct_volume = OCTVolumeWithMetaData(
         volume=volume_slices,
@@ -191,6 +291,13 @@ def load_tupai_oct_dataset(path: str | Path) -> dict[str, Any]:
             "dicom": {
                 "oct_file": str(oct_file),
                 "fundus_file": str(fundus_file),
+                "patient_name": patient_name,
+                "patient_id": patient_id,
+                "patient_birth_date": patient_birth_date,
+                "patient_sex": patient_sex,
+                "device_name": device_name,
+                "scan_pattern": scan_pattern,
+                "laterality": laterality or "",
             },
         },
         header={"source": "Tupai"},
@@ -200,6 +307,11 @@ def load_tupai_oct_dataset(path: str | Path) -> dict[str, Any]:
             "height": int(volume_array.shape[1]),
         },
     )
+    oct_volume.patient_name = patient_name
+    oct_volume.patient_dob = patient_birth_date
+    oct_volume.sex = patient_sex
+    oct_volume.device_name = device_name
+    oct_volume.scan_pattern = scan_pattern
 
     fundus_image = FundusImageWithMetaData(
         image=np.asarray(fundus),
@@ -211,6 +323,13 @@ def load_tupai_oct_dataset(path: str | Path) -> dict[str, Any]:
             "source": "Tupai",
             "oct_file": str(oct_file),
             "fundus_file": str(fundus_file),
+            "patient_name": patient_name,
+            "patient_id": patient_id,
+            "patient_birth_date": patient_birth_date,
+            "patient_sex": patient_sex,
+            "device_name": device_name,
+            "scan_pattern": scan_pattern,
+            "laterality": laterality or "",
         },
         pixel_spacing=(
             [float(fundus_spacing[1]), float(fundus_spacing[0])]
@@ -218,6 +337,11 @@ def load_tupai_oct_dataset(path: str | Path) -> dict[str, Any]:
             else None
         ),
     )
+    fundus_image.patient_name = patient_name
+    fundus_image.patient_dob = patient_birth_date
+    fundus_image.sex = patient_sex
+    fundus_image.device_name = device_name
+    fundus_image.scan_pattern = scan_pattern
 
     return {
         "dataset_dir": str(dataset_dir),
