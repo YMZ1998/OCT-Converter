@@ -149,6 +149,14 @@ def extract_valid_patient_birth_date(dataset) -> str | None:
     return birth_date.strftime("%Y%m%d")
 
 
+def extract_scan_pattern(dataset) -> str | None:
+    return (
+        getattr(dataset, "ProtocolName", None)
+        or getattr(dataset, "StudyDescription", None)
+        or getattr(dataset, "SeriesDescription", None)
+    )
+
+
 def extract_basic_dicom_metadata(dataset, *, include_paths: dict[str, str] | None = None) -> dict[str, Any]:
     metadata = {
         "manufacturer": getattr(dataset, "Manufacturer", None),
@@ -157,6 +165,9 @@ def extract_basic_dicom_metadata(dataset, *, include_paths: dict[str, str] | Non
         "patient_name": str(getattr(dataset, "PatientName", "")) or None,
         "patient_sex": getattr(dataset, "PatientSex", None),
         "patient_birth_date": extract_valid_patient_birth_date(dataset),
+        "protocol_name": getattr(dataset, "ProtocolName", None),
+        "study_description": getattr(dataset, "StudyDescription", None),
+        "series_description": getattr(dataset, "SeriesDescription", None),
         "study_instance_uid": getattr(dataset, "StudyInstanceUID", None),
         "series_instance_uid": getattr(dataset, "SeriesInstanceUID", None),
         "sop_instance_uid": getattr(dataset, "SOPInstanceUID", None),
@@ -675,6 +686,7 @@ def load_shiwei_oct_dataset(
         },
         header=extract_basic_dicom_metadata(ds_bscan, include_paths=file_paths),
     )
+    volume_object.scan_pattern = extract_scan_pattern(ds_bscan) or extract_scan_pattern(ds_fundus)
 
     fundus_object = FundusImageWithMetaData(
         image=fundus,
@@ -685,6 +697,7 @@ def load_shiwei_oct_dataset(
         metadata=extract_basic_dicom_metadata(ds_fundus, include_paths=file_paths),
         pixel_spacing=extract_fundus_pixel_spacing(ds_fundus),
     )
+    fundus_object.scan_pattern = extract_scan_pattern(ds_fundus) or extract_scan_pattern(ds_bscan)
 
     return {
         "volume": volume_object,

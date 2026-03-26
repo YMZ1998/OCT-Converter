@@ -14,6 +14,36 @@ from oct_converter.image_types import FundusImageWithMetaData, OCTVolumeWithMeta
 from oct_converter.readers.binary_structs import e2e_binary
 
 
+def _first_non_empty_text(values: list[str] | tuple[str, ...]) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _extract_metadata_device_name(metadata: dict) -> str:
+    for item in metadata.get("device_data", []):
+        text_values = item.get("text") if isinstance(item, dict) else None
+        if isinstance(text_values, (list, tuple)):
+            device_name = _first_non_empty_text(tuple(text_values))
+            if device_name:
+                return device_name
+    return ""
+
+
+def _extract_metadata_scan_pattern(metadata: dict, image_id: str) -> str:
+    scan_patterns = metadata.get("scan_pattern", {})
+    if not isinstance(scan_patterns, dict):
+        return ""
+    return _first_non_empty_text(
+        (
+            scan_patterns.get(image_id, ""),
+            next(iter(scan_patterns.values()), ""),
+        )
+    )
+
+
 class E2E(object):
     """Class for extracting data from Heidelberg's .e2e file format.
 
@@ -309,22 +339,23 @@ class E2E(object):
                 volume = [slc for slc in volume if not isinstance(slc, int)]
                 if volume is None or len(volume) == 0:
                     continue
-                oct_volumes.append(
-                    OCTVolumeWithMetaData(
-                        volume=volume,
-                        patient_id=self.patient_id,
-                        first_name=self.first_name,
-                        surname=self.surname,
-                        sex=self.sex,
-                        patient_dob=self.birthdate,
-                        acquisition_date=self.acquisition_date,
-                        volume_id=key,
-                        laterality=laterality_dict.get(key),
-                        contours=contour_data.get(key),
-                        pixel_spacing=self.pixel_spacing,
-                        metadata=metadata,
-                    )
+                oct_volume = OCTVolumeWithMetaData(
+                    volume=volume,
+                    patient_id=self.patient_id,
+                    first_name=self.first_name,
+                    surname=self.surname,
+                    sex=self.sex,
+                    patient_dob=self.birthdate,
+                    acquisition_date=self.acquisition_date,
+                    volume_id=key,
+                    laterality=laterality_dict.get(key),
+                    contours=contour_data.get(key),
+                    pixel_spacing=self.pixel_spacing,
+                    metadata=metadata,
                 )
+                oct_volume.device_name = _extract_metadata_device_name(metadata)
+                oct_volume.scan_pattern = _extract_metadata_scan_pattern(metadata, key)
+                oct_volumes.append(oct_volume)
 
         return oct_volumes
 
@@ -432,18 +463,19 @@ class E2E(object):
 
             fundus_images = []
             for key, image in image_array_dict.items():
-                fundus_images.append(
-                    FundusImageWithMetaData(
-                        image=image,
-                        patient_id=self.patient_id,
-                        image_id=key,
-                        laterality=laterality_dict[key]
-                        if key in laterality_dict.keys()
-                        else None,
-                        metadata=metadata,
-                        pixel_spacing=[scalex, scalex],
-                    )
+                fundus_image = FundusImageWithMetaData(
+                    image=image,
+                    patient_id=self.patient_id,
+                    image_id=key,
+                    laterality=laterality_dict[key]
+                    if key in laterality_dict.keys()
+                    else None,
+                    metadata=metadata,
+                    pixel_spacing=[scalex, scalex],
                 )
+                fundus_image.device_name = _extract_metadata_device_name(metadata)
+                fundus_image.scan_pattern = _extract_metadata_scan_pattern(metadata, key)
+                fundus_images.append(fundus_image)
 
         return fundus_images
 

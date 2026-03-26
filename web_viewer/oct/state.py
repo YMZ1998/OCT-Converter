@@ -4,6 +4,7 @@ import json
 import shutil
 import tempfile
 import threading
+import warnings
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -1348,7 +1349,9 @@ class ViewerState:
 
         exam_dirs = resolve_zeiss_exam_dirs(path)
         if exam_dirs:
-            return load_zeiss_oct_dataset(path)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                return load_zeiss_oct_dataset(path)
         return None
 
     def _try_load_shiwei_dataset(

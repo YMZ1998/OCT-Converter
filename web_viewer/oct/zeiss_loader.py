@@ -6,6 +6,7 @@ import math
 import warnings
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,9 @@ import pydicom
 
 from oct_converter.image_types import FundusImageWithMetaData, OCTVolumeWithMetaData
 from scripts.old.zeiss_dicom import ZEISSDicom
+
+pydicom.config.settings.reading_validation_mode = pydicom.config.IGNORE
+pydicom.config.settings.writing_validation_mode = pydicom.config.IGNORE
 
 OPHTHALMIC_PHOTOGRAPHY_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.77.1.5.1"
 RAW_ANALYSIS_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.66"
@@ -63,6 +67,74 @@ def clean_text(value: Any) -> str:
     text = str(value).split("\x00", 1)[0]
     text = "".join(char for char in text if char.isprintable())
     return text.strip()
+
+
+def clean_digits(value: Any) -> str:
+    return "".join(character for character in clean_text(value) if character.isdigit())
+
+
+def clean_person_name(value: Any) -> str:
+    text = clean_text(value)
+    if not text:
+        return ""
+    primary = text.split("=", 1)[0]
+    parts = [part for part in primary.split("^") if part]
+    return " ".join(parts).strip()
+
+
+def normalize_dicom_date(value: Any) -> str:
+    digits = clean_digits(value)
+    return digits[:8] if len(digits) >= 8 else ""
+
+
+def parse_dicom_datetime(date_time_value: Any, date_value: Any, time_value: Any) -> datetime | None:
+    date_time_digits = clean_digits(date_time_value)
+    if len(date_time_digits) >= 14:
+        try:
+            return datetime.strptime(date_time_digits[:14], "%Y%m%d%H%M%S")
+        except ValueError:
+            pass
+
+    date_digits = clean_digits(date_value)
+    time_digits = clean_digits(time_value)
+    if len(date_digits) != 8:
+        return None
+    time_digits = (time_digits + "000000")[:6]
+    try:
+        return datetime.strptime(f"{date_digits}{time_digits}", "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
+def build_device_name(manufacturer: str, model: str) -> str:
+    if manufacturer and model and model.lower() not in manufacturer.lower():
+        return f"{manufacturer} {model}"
+    return manufacturer or model
+
+
+def extract_zeiss_header_metadata(ds: pydicom.dataset.FileDataset) -> dict[str, Any]:
+    manufacturer = clean_text(getattr(ds, "Manufacturer", ""))
+    model_name = clean_text(getattr(ds, "ManufacturerModelName", ""))
+    patient_name = clean_person_name(getattr(ds, "PatientName", ""))
+    metadata = {
+        "patient_name": patient_name,
+        "patient_id": clean_text(getattr(ds, "PatientID", "")),
+        "patient_birth_date": normalize_dicom_date(getattr(ds, "PatientBirthDate", "")),
+        "patient_sex": clean_text(getattr(ds, "PatientSex", "")),
+        "manufacturer": manufacturer,
+        "manufacturer_model_name": model_name,
+        "device_name": build_device_name(manufacturer, model_name),
+        "protocol_name": clean_text(getattr(ds, "ProtocolName", "")),
+        "study_description": clean_text(getattr(ds, "StudyDescription", "")),
+        "series_description": clean_text(getattr(ds, "SeriesDescription", "")),
+        "laterality": clean_text(getattr(ds, "Laterality", "")) or clean_text(getattr(ds, "ImageLaterality", "")),
+        "acquisition_datetime": parse_dicom_datetime(
+            getattr(ds, "AcquisitionDateTime", ""),
+            getattr(ds, "AcquisitionDate", "") or getattr(ds, "StudyDate", ""),
+            getattr(ds, "AcquisitionTime", "") or getattr(ds, "StudyTime", ""),
+        ),
+    }
+    return {key: value for key, value in metadata.items() if value not in ("", None)}
 
 
 def parse_float(value: Any) -> float | None:
@@ -185,7 +257,8 @@ def to_gray_volume(volume_array: np.ndarray) -> np.ndarray:
 def safe_dcmread(path: Path, *, stop_before_pixels: bool = False) -> pydicom.dataset.FileDataset:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return pydicom.dcmread(path, force=True, stop_before_pixels=stop_before_pixels)
+        with pydicom.config.disable_value_validation():
+            return pydicom.dcmread(path, force=True, stop_before_pixels=stop_before_pixels)
 
 
 def classify_dicom(ds: pydicom.dataset.FileDataset) -> str:
@@ -825,6 +898,9 @@ def _append_fundus_candidate(
 
 
 def load_zeiss_oct_dataset(path: str | Path) -> dict[str, Any]:
+    pydicom.config.settings.reading_validation_mode = pydicom.config.IGNORE
+    pydicom.config.settings.writing_validation_mode = pydicom.config.IGNORE
+
     exam_dirs = resolve_zeiss_exam_dirs(path)
     if not exam_dirs:
         raise FileNotFoundError(
@@ -841,11 +917,14 @@ def load_zeiss_oct_dataset(path: str | Path) -> dict[str, Any]:
         dicomdir_path = exam_dir / "DICOMDIR"
         if dicomdir_path.exists():
             try:
-                dicomdir_ds = safe_dcmread(dicomdir_path, stop_before_pixels=True)
-                for record in getattr(dicomdir_ds, "DirectoryRecordSequence", []):
-                    patient_id = clean_text(getattr(record, "PatientID", ""))
-                    if patient_id:
-                        break
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    with pydicom.config.disable_value_validation():
+                        dicomdir_ds = safe_dcmread(dicomdir_path, stop_before_pixels=True)
+                        for record in getattr(dicomdir_ds, "DirectoryRecordSequence", []):
+                            patient_id = clean_text(getattr(record, "PatientID", ""))
+                            if patient_id:
+                                break
             except Exception:
                 patient_id = ""
 
@@ -863,44 +942,67 @@ def load_zeiss_oct_dataset(path: str | Path) -> dict[str, Any]:
 
         for dcm_file in dcm_files:
             ds = safe_dcmread(dcm_file)
-            manufacturer = clean_text(getattr(ds, "Manufacturer", ""))
-            sop_class_uid = clean_text(getattr(ds, "SOPClassUID", ""))
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with pydicom.config.disable_value_validation():
+                    manufacturer = clean_text(getattr(ds, "Manufacturer", ""))
+                    sop_class_uid = clean_text(getattr(ds, "SOPClassUID", ""))
             if (
                 not manufacturer.startswith(ZEISS_MANUFACTURER_PREFIX)
                 and sop_class_uid != RAW_ANALYSIS_SOP_CLASS_UID
             ):
                 continue
 
-            classification = classify_dicom(ds)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with pydicom.config.disable_value_validation():
+                    classification = classify_dicom(ds)
             if classification == "non_image_dicom":
                 continue
 
-            rows = getattr(ds, "Rows", None)
-            columns = getattr(ds, "Columns", None)
-            pixel_spacing = parse_pixel_spacing(getattr(ds, "PixelSpacing", None))
-            physical_width_mm, physical_height_mm = derive_physical_size_mm(rows, columns, pixel_spacing)
-            frame_of_reference_uid = clean_text(getattr(ds, "FrameOfReferenceUID", ""))
-            series_instance_uid = clean_text(getattr(ds, "SeriesInstanceUID", ""))
-            spacing_between_slices = parse_float(getattr(ds, "SpacingBetweenSlices", None))
-            fundus_source_kind = classify_fundus_source_kind(
-                ds,
-                classification,
-                from_embedded_fundus=True,
-            )
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with pydicom.config.disable_value_validation():
+                    rows = getattr(ds, "Rows", None)
+                    columns = getattr(ds, "Columns", None)
+                    pixel_spacing = parse_pixel_spacing(getattr(ds, "PixelSpacing", None))
+                    physical_width_mm, physical_height_mm = derive_physical_size_mm(rows, columns, pixel_spacing)
+                    frame_of_reference_uid = clean_text(getattr(ds, "FrameOfReferenceUID", ""))
+                    series_instance_uid = clean_text(getattr(ds, "SeriesInstanceUID", ""))
+                    spacing_between_slices = parse_float(getattr(ds, "SpacingBetweenSlices", None))
+                    fundus_source_kind = classify_fundus_source_kind(
+                        ds,
+                        classification,
+                        from_embedded_fundus=True,
+                    )
+                    header_metadata = extract_zeiss_header_metadata(ds)
 
             try:
-                reader = ZEISSDicom(dcm_file)
-                oct_volumes, fundus_images = reader.read_data()
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    with pydicom.config.disable_value_validation():
+                        reader = ZEISSDicom(dcm_file)
+                        oct_volumes, fundus_images = reader.read_data()
             except Exception:
                 continue
 
-            file_laterality = clean_text(getattr(ds, "Laterality", ""))
-            file_patient_id = clean_text(getattr(ds, "PatientID", "")) or patient_id or None
+            file_laterality = header_metadata.get("laterality", "")
+            file_patient_id = header_metadata.get("patient_id", "") or patient_id or None
+            file_patient_name = header_metadata.get("patient_name", "")
+            file_patient_birth_date = header_metadata.get("patient_birth_date", "")
+            file_patient_sex = header_metadata.get("patient_sex", "")
+            file_device_name = header_metadata.get("device_name", "")
+            file_scan_pattern = (
+                header_metadata.get("protocol_name", "")
+                or header_metadata.get("study_description", "")
+                or header_metadata.get("series_description", "")
+            )
+            file_acquisition_date = header_metadata.get("acquisition_datetime")
 
             for image in fundus_images:
                 image_counter += 1
                 image_id = f"{exam_dir.name} | {dcm_file.stem} | {fundus_source_kind} | {image_counter}"
-                _append_fundus_candidate(
+                candidate = _append_fundus_candidate(
                     all_fundus_images,
                     fundus_candidates,
                     image=image.image,
@@ -915,6 +1017,16 @@ def load_zeiss_oct_dataset(path: str | Path) -> dict[str, Any]:
                     exam_id=exam_dir.name,
                     image_id=image_id,
                 )
+                fundus_image = all_fundus_images[candidate.fundus_index]
+                fundus_image.patient_name = file_patient_name
+                fundus_image.patient_dob = file_patient_birth_date
+                fundus_image.sex = file_patient_sex
+                fundus_image.device_name = file_device_name
+                fundus_image.scan_pattern = file_scan_pattern
+                fundus_image.metadata = {
+                    **(fundus_image.metadata or {}),
+                    **header_metadata,
+                }
 
             for index, volume in enumerate(oct_volumes):
                 gray_volume = to_gray_volume(volume.volume)
@@ -925,8 +1037,14 @@ def load_zeiss_oct_dataset(path: str | Path) -> dict[str, Any]:
                             "source_file": dcm_file,
                             "volume_index": index,
                             "laterality": clean_text(getattr(volume, "laterality", "")) or file_laterality,
-                            "patient_id": volume.patient_id or file_patient_id,
-                            "acquisition_date": getattr(volume, "acquisition_date", None),
+                            "patient_id": file_patient_id,
+                            "patient_name": file_patient_name,
+                            "patient_birth_date": file_patient_birth_date,
+                            "patient_sex": file_patient_sex,
+                            "device_name": file_device_name,
+                            "scan_pattern": file_scan_pattern,
+                            "header_metadata": header_metadata,
+                            "acquisition_date": file_acquisition_date or getattr(volume, "acquisition_date", None),
                             "volume": gray_volume,
                             "frame_of_reference_uid": frame_of_reference_uid,
                             "series_instance_uid": series_instance_uid,
@@ -1188,8 +1306,15 @@ def load_zeiss_oct_dataset(path: str | Path) -> dict[str, Any]:
                     contours=contours or None,
                     pixel_spacing=pixel_spacing,
                     metadata=metadata,
+                    header=item["header_metadata"],
                 )
             )
+            current_volume = all_volumes[-1]
+            current_volume.patient_name = item["patient_name"]
+            current_volume.patient_dob = item["patient_birth_date"]
+            current_volume.sex = item["patient_sex"]
+            current_volume.device_name = item["device_name"]
+            current_volume.scan_pattern = item["scan_pattern"]
             overlays.append(
                 {
                     "matched_fundus_index": matched_fundus_index,

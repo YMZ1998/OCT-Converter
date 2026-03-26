@@ -1927,12 +1927,17 @@
         if (normalized === "O" || normalized === "OTHER" || normalized === "\u5176\u4ed6") return "\u5176\u4ed6";
         return formatSexValue(value);
       };
+      const formatExamDateValue = (value) => {
+        const text = String(value || "").trim();
+        if (!text) return "-";
+        return text.replace(/T/g, " ");
+      };
 
       elements.patientNameValue.textContent = loaded ? (volume?.patientName || "-") : "-";
       elements.patientIdValue.textContent = loaded ? (volume?.patientId || "-") : "-";
       elements.birthDateValue.textContent = loaded ? formatBirthDateValue(volume?.birthDate) : "-";
       elements.sexValue.textContent = loaded ? displaySexValue(volume?.sex) : "-";
-      elements.examDateValue.textContent = loaded ? (volume?.acquisitionDate || "-") : "-";
+      elements.examDateValue.textContent = loaded ? formatExamDateValue(volume?.acquisitionDate) : "-";
       elements.deviceValue.textContent = loaded ? (volume?.device || state.data.reader || "-") : "-";
       elements.lateralityValue.textContent = loaded ? (volume?.laterality || "-") : "-";
       elements.scanPatternValue.textContent = loaded ? (volume?.scanPattern || "-") : "-";
