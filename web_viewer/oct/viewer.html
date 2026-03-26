@@ -1909,11 +1909,29 @@
         if (normalized === "O" || normalized === "OTHER" || normalized === "其他") return "其他";
         return String(value);
       };
+      const formatBirthDateValue = (value) => {
+        const text = String(value || "").trim();
+        if (!text) return "-";
+        const digits = text.replace(/\D/g, "");
+        if (digits.length === 8) {
+          return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+        }
+        return text;
+      };
+      const displaySexValue = (value) => {
+        const text = String(value || "").trim();
+        const normalized = text.toUpperCase();
+        if (!normalized) return "-";
+        if (normalized === "M" || normalized === "MALE" || normalized === "\u7537") return "\u7537";
+        if (normalized === "F" || normalized === "FEMALE" || normalized === "\u5973") return "\u5973";
+        if (normalized === "O" || normalized === "OTHER" || normalized === "\u5176\u4ed6") return "\u5176\u4ed6";
+        return formatSexValue(value);
+      };
 
       elements.patientNameValue.textContent = loaded ? (volume?.patientName || "-") : "-";
       elements.patientIdValue.textContent = loaded ? (volume?.patientId || "-") : "-";
-      elements.birthDateValue.textContent = loaded ? (volume?.birthDate || "-") : "-";
-      elements.sexValue.textContent = loaded ? formatSexValue(volume?.sex) : "-";
+      elements.birthDateValue.textContent = loaded ? formatBirthDateValue(volume?.birthDate) : "-";
+      elements.sexValue.textContent = loaded ? displaySexValue(volume?.sex) : "-";
       elements.examDateValue.textContent = loaded ? (volume?.acquisitionDate || "-") : "-";
       elements.deviceValue.textContent = loaded ? (volume?.device || state.data.reader || "-") : "-";
       elements.lateralityValue.textContent = loaded ? (volume?.laterality || "-") : "-";

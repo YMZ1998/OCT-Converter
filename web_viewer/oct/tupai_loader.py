@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+import warnings
 
 import numpy as np
 import pydicom
@@ -46,6 +47,14 @@ def _find_case_insensitive_file(directory: Path, target_name: str) -> Path | Non
         if child.is_file() and child.name.lower() == target_lower:
             return child
     return None
+
+
+def _safe_dcmread(path: Path, *, stop_before_pixels: bool = False) -> pydicom.dataset.FileDataset:
+    """Reads a DICOM file while suppressing non-fatal pydicom warnings."""
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return pydicom.dcmread(str(path), stop_before_pixels=stop_before_pixels)
 
 
 def _is_tupai_dataset_dir(directory: Path) -> bool:
@@ -243,8 +252,8 @@ def load_tupai_oct_dataset(path: str | Path) -> dict[str, Any]:
             "Missing OCT.dcm or Fundus.dcm in Tupai dataset directory."
         )
 
-    ds_bscan = pydicom.dcmread(str(oct_file), stop_before_pixels=True)
-    ds_fundus = pydicom.dcmread(str(fundus_file), stop_before_pixels=True)
+    ds_bscan = _safe_dcmread(oct_file, stop_before_pixels=True)
+    ds_fundus = _safe_dcmread(fundus_file, stop_before_pixels=True)
 
     volume_array = np.asarray(volume)
     if volume_array.ndim < 3:

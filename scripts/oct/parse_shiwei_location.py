@@ -115,6 +115,40 @@ def _extract_acquisition_datetime(dataset) -> datetime | None:
     return None
 
 
+def _parse_dicom_date(value: Any) -> datetime | None:
+    text = "".join(character for character in str(value or "").strip() if character.isdigit())
+    if len(text) != 8:
+        return None
+    try:
+        return datetime.strptime(text, "%Y%m%d")
+    except ValueError:
+        return None
+
+
+def extract_valid_patient_birth_date(dataset) -> str | None:
+    raw_birth_date = getattr(dataset, "PatientBirthDate", None)
+    birth_date = _parse_dicom_date(raw_birth_date)
+    if birth_date is None:
+        return raw_birth_date or None
+
+    exam_dates = [
+        _parse_dicom_date(getattr(dataset, "AcquisitionDate", None)),
+        _parse_dicom_date(getattr(dataset, "ContentDate", None)),
+        _parse_dicom_date(getattr(dataset, "StudyDate", None)),
+    ]
+    exam_dates = [item for item in exam_dates if item is not None]
+    if exam_dates and birth_date > min(exam_dates):
+        return None
+
+    if birth_date > datetime.now():
+        return None
+
+    if birth_date.year < 1900:
+        return None
+
+    return birth_date.strftime("%Y%m%d")
+
+
 def extract_basic_dicom_metadata(dataset, *, include_paths: dict[str, str] | None = None) -> dict[str, Any]:
     metadata = {
         "manufacturer": getattr(dataset, "Manufacturer", None),
@@ -122,7 +156,7 @@ def extract_basic_dicom_metadata(dataset, *, include_paths: dict[str, str] | Non
         "patient_id": getattr(dataset, "PatientID", None),
         "patient_name": str(getattr(dataset, "PatientName", "")) or None,
         "patient_sex": getattr(dataset, "PatientSex", None),
-        "patient_birth_date": getattr(dataset, "PatientBirthDate", None),
+        "patient_birth_date": extract_valid_patient_birth_date(dataset),
         "study_instance_uid": getattr(dataset, "StudyInstanceUID", None),
         "series_instance_uid": getattr(dataset, "SeriesInstanceUID", None),
         "sop_instance_uid": getattr(dataset, "SOPInstanceUID", None),
@@ -626,7 +660,7 @@ def load_shiwei_oct_dataset(
     volume_object = OCTVolumeWithMetaData(
         volume=volume,
         patient_id=getattr(ds_bscan, "PatientID", None),
-        patient_dob=getattr(ds_bscan, "PatientBirthDate", None),
+        patient_dob=extract_valid_patient_birth_date(ds_bscan),
         volume_id=Path(bscan_file).stem,
         acquisition_date=_extract_acquisition_datetime(ds_bscan),
         laterality=_extract_laterality(ds_bscan),
@@ -647,7 +681,7 @@ def load_shiwei_oct_dataset(
         laterality=_extract_laterality(ds_fundus),
         patient_id=getattr(ds_fundus, "PatientID", None),
         image_id=Path(fundus_file).stem,
-        patient_dob=getattr(ds_fundus, "PatientBirthDate", None),
+        patient_dob=extract_valid_patient_birth_date(ds_fundus),
         metadata=extract_basic_dicom_metadata(ds_fundus, include_paths=file_paths),
         pixel_spacing=extract_fundus_pixel_spacing(ds_fundus),
     )
