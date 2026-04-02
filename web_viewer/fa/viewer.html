@@ -603,6 +603,12 @@
       playing: false,
       timerId: null,
       timelineModel: null,
+      imageLoading: false,
+      playbackAdvancePending: false,
+      datasetCacheToken: '',
+      currentImageUrl: '',
+      preloadedImageUrls: new Set(),
+      rerenderTimerId: null,
     };
 
     const els = {
@@ -965,8 +971,53 @@
       els.timelineCurrentLabel.textContent = parts.join(' · ');
     }
 
+    function buildFrameImageUrl(frame) {
+      const contrast = Number(els.contrastSlider.value) || 100;
+      const brightness = Number(els.brightnessSlider.value) || 0;
+      const datasetToken = encodeURIComponent(state.datasetCacheToken || 'default');
+      return `/api/frame/${frame.originalIndex}.png?contrast=${contrast}&brightness=${brightness}&ds=${datasetToken}`;
+    }
+
+    function rememberPreloadedUrl(url) {
+      state.preloadedImageUrls.add(url);
+      if (state.preloadedImageUrls.size > 400) {
+        state.preloadedImageUrls.clear();
+        state.preloadedImageUrls.add(url);
+      }
+    }
+
+    function preloadFrameAt(index) {
+      if (!state.visibleFrames.length) return;
+      if (index < 0 || index >= state.visibleFrames.length) return;
+      const frame = state.visibleFrames[index];
+      const url = buildFrameImageUrl(frame);
+      if (url === state.currentImageUrl || state.preloadedImageUrls.has(url)) return;
+      const image = new Image();
+      image.decoding = 'async';
+      image.src = url;
+      rememberPreloadedUrl(url);
+    }
+
+    function preloadNeighbors(centerIndex) {
+      preloadFrameAt(centerIndex + 1);
+      preloadFrameAt(centerIndex + 2);
+      preloadFrameAt(centerIndex - 1);
+    }
+
+    function scheduleCurrentFrameRerender() {
+      if (state.currentVisibleIndex < 0) return;
+      if (state.rerenderTimerId !== null) {
+        clearTimeout(state.rerenderTimerId);
+      }
+      state.rerenderTimerId = window.setTimeout(() => {
+        state.rerenderTimerId = null;
+        gotoFrame(state.currentVisibleIndex);
+      }, 45);
+    }
+
     function stopPlayback() {
       state.playing = false;
+      state.playbackAdvancePending = false;
       if (state.timerId !== null) {
         clearInterval(state.timerId);
         state.timerId = null;
@@ -978,8 +1029,13 @@
       stopPlayback();
       const fps = Math.max(1, Number(els.fpsInput.value) || 3);
       state.playing = true;
+      state.playbackAdvancePending = false;
       els.playButton.textContent = '暂停';
       state.timerId = window.setInterval(() => {
+        if (state.imageLoading) {
+          state.playbackAdvancePending = true;
+          return;
+        }
         gotoFrame(state.currentVisibleIndex + 1);
       }, Math.round(1000 / fps));
     }
@@ -1033,6 +1089,10 @@
       stopPlayback();
       state.visibleFrames = [];
       state.currentVisibleIndex = -1;
+      state.imageLoading = false;
+      state.currentImageUrl = '';
+      state.datasetCacheToken = '';
+      state.preloadedImageUrls.clear();
       els.pathDisplay.textContent = message || '未加载';
       els.summaryText.textContent = '准备加载 Topcon / Zeiss / HDB FA 数据';
       els.metadataText.textContent = '';
@@ -1063,6 +1123,14 @@
       }
 
       const dataset = payload.dataset || {};
+      state.datasetCacheToken = [
+        payload.sourcePath || dataset.inputPath || '',
+        dataset.vendor || '',
+        String(dataset.frameCount || 0),
+      ].join('|');
+      state.preloadedImageUrls.clear();
+      state.currentImageUrl = '';
+      state.imageLoading = false;
       els.pathInput.value = payload.sourcePath || dataset.inputPath || '';
       els.pathDisplay.textContent = dataset.inputPath || payload.sourcePath || '-';
       els.summaryText.textContent = dataset.summaryText || '';
@@ -1130,6 +1198,9 @@
         stopPlayback();
         els.frameTableBody.innerHTML = '';
         els.frameImage.removeAttribute('src');
+        state.imageLoading = false;
+        state.currentImageUrl = '';
+        state.preloadedImageUrls.clear();
         els.imageInfoBar.textContent = 'FA | - | Frame -/- | -';
         els.metadataText.textContent = '';
         els.frameInfo.textContent = 'Frame: -';
@@ -1195,9 +1266,16 @@
       els.imageInfoBar.textContent = `${groupText} | ${eyeText} | Frame ${normalized + 1}/${state.visibleFrames.length} | ${timeText}`;
       els.metadataText.textContent = frame.metadataText || '';
 
-      const contrast = Number(els.contrastSlider.value) || 100;
-      const brightness = Number(els.brightnessSlider.value) || 0;
-      els.frameImage.src = `/api/frame/${frame.originalIndex}.png?contrast=${contrast}&brightness=${brightness}&_=${Date.now()}`;
+      const imageUrl = buildFrameImageUrl(frame);
+      if (state.currentImageUrl !== imageUrl || els.frameImage.getAttribute('src') !== imageUrl) {
+        state.imageLoading = true;
+        state.currentImageUrl = imageUrl;
+        els.frameImage.src = imageUrl;
+        rememberPreloadedUrl(imageUrl);
+      } else {
+        state.imageLoading = false;
+      }
+      preloadNeighbors(normalized);
 
       for (const row of els.frameTableBody.querySelectorAll('tr')) {
         row.classList.toggle('active', Number(row.dataset.index) === normalized);
@@ -1205,6 +1283,16 @@
 
       updateTimelineSelection();
       setStatus(`${frame.filename} | ${groupText} | ${timeText}`);
+    }
+
+    function onFrameImageSettled() {
+      state.imageLoading = false;
+      if (!state.playing || !state.playbackAdvancePending) return;
+      state.playbackAdvancePending = false;
+      window.requestAnimationFrame(() => {
+        if (!state.playing || state.imageLoading) return;
+        gotoFrame(state.currentVisibleIndex + 1);
+      });
     }
 
     async function loadCurrentPath() {
@@ -1292,8 +1380,11 @@
       if (state.playing) startPlayback();
     });
 
-    els.contrastSlider.addEventListener('input', () => gotoFrame(state.currentVisibleIndex));
-    els.brightnessSlider.addEventListener('input', () => gotoFrame(state.currentVisibleIndex));
+    els.contrastSlider.addEventListener('input', scheduleCurrentFrameRerender);
+    els.brightnessSlider.addEventListener('input', scheduleCurrentFrameRerender);
+    els.frameImage.decoding = 'async';
+    els.frameImage.addEventListener('load', onFrameImageSettled);
+    els.frameImage.addEventListener('error', onFrameImageSettled);
 
     els.pathInput.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') loadCurrentPath();

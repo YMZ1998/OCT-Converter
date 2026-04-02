@@ -14,7 +14,7 @@ from .state import FAViewerState
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local FA web viewer.")
     parser.add_argument("path", nargs="?", help="Optional FA dataset path to load at startup.")
-    parser.add_argument("--vendor", default="auto", help="Startup vendor mode: auto/topcon/zeiss/hdb.")
+    parser.add_argument("--vendor", default="auto", help="Startup vendor mode: auto/topcon/zeiss/hdb/cfp.")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind.")
     parser.add_argument("--port", type=int, default=8766, help="Port to bind.")
     parser.add_argument(

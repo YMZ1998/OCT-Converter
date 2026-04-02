@@ -4,6 +4,7 @@ import io
 import json
 import sys
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ from fa_qt_viewer import (  # type: ignore[import-not-found]
     UnifiedFADataset,
     UnifiedFAFrame,
     VENDOR_AUTO,
+    VENDOR_CFP,
     VENDOR_HDB,
     VENDOR_TOPCON,
     VENDOR_ZEISS,
@@ -36,19 +38,21 @@ SUPPORTED_VENDORS = [
     {"value": VENDOR_TOPCON, "label": "Topcon"},
     {"value": VENDOR_ZEISS, "label": "Zeiss"},
     {"value": VENDOR_HDB, "label": "HDB"},
+    {"value": VENDOR_CFP, "label": "CFP"},
 ]
 
 FILE_DIALOG_TYPES = [
-    ("FA files", "*.e2e *.E2E *.dcm *.dicom *.jpg *.JPG DATAFILE"),
+    ("FA files", "*.e2e *.E2E *.dcm *.dicom *.jpg *.JPG *.jpeg *.JPEG *.png *.PNG *.bmp *.BMP DATAFILE"),
     ("DICOM", "*.dcm *.dicom"),
     ("E2E", "*.e2e *.E2E"),
-    ("Images", "*.jpg *.JPG *.png *.PNG"),
+    ("Images", "*.jpg *.JPG *.jpeg *.JPEG *.png *.PNG *.bmp *.BMP"),
     ("All files", "*.*"),
 ]
 
 STATE_DIRECTORY = Path.home() / ".oct_converter"
 STATE_FILENAME = "fa_web_viewer_state.json"
 MAX_RECENT_PATHS = 8
+MAX_FRAME_PNG_CACHE_ITEMS = 384
 
 
 def to_jsonable(value: Any) -> Any:
@@ -178,6 +182,7 @@ class FAViewerState:
         self.loaded_state: FALoadedState | None = None
         self.state_path = STATE_DIRECTORY / STATE_FILENAME
         self.recent_paths: list[str] = self._load_recent_paths()
+        self.frame_png_cache: OrderedDict[tuple[int, int, int], bytes] = OrderedDict()
 
     def load(self, filepath: str, vendor_mode: str = VENDOR_AUTO) -> dict[str, Any]:
         path = Path(filepath).expanduser().resolve()
@@ -188,6 +193,7 @@ class FAViewerState:
                 vendor_mode=vendor_mode,
                 dataset=dataset,
             )
+            self.frame_png_cache.clear()
             self._remember_path(str(path))
         return self.build_state_payload()
 
@@ -260,11 +266,21 @@ class FAViewerState:
         contrast_percent: int = 100,
         brightness_offset: int = 0,
     ) -> bytes:
+        cache_key = (
+            int(frame_index),
+            int(contrast_percent),
+            int(brightness_offset),
+        )
+
         with self.lock:
             state = self.loaded_state
             if state is None:
                 raise ValueError("No FA dataset loaded.")
             dataset = state.dataset
+            cached_payload = self.frame_png_cache.get(cache_key)
+            if cached_payload is not None:
+                self.frame_png_cache.move_to_end(cache_key)
+                return cached_payload
 
         if frame_index < 0 or frame_index >= len(dataset.frames):
             raise IndexError(f"Frame index out of range: {frame_index}")
@@ -272,7 +288,15 @@ class FAViewerState:
         frame = dataset.frames[frame_index]
         image = self._frame_to_array(frame)
         display = apply_window(normalize_to_uint8(image), contrast_percent, brightness_offset)
-        return encode_png(display)
+        payload = encode_png(display)
+
+        with self.lock:
+            if self.loaded_state is state:
+                self.frame_png_cache[cache_key] = payload
+                self.frame_png_cache.move_to_end(cache_key)
+                while len(self.frame_png_cache) > MAX_FRAME_PNG_CACHE_ITEMS:
+                    self.frame_png_cache.popitem(last=False)
+        return payload
 
     def close(self) -> None:
         return

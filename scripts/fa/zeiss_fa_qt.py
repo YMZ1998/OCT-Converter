@@ -396,6 +396,9 @@ def extract_time_info(
             datetime_value=parsed_datetime,
         )
 
+    best_partial: ParsedTimeInfo | None = None
+    best_partial_score = -1
+
     for date_keyword, time_keyword in date_time_pairs:
         raw_date_value, raw_date_source = find_first_value(
             dataset,
@@ -411,18 +414,30 @@ def extract_time_info(
         parsed_time = parse_dicom_time(raw_time_value)
         parsed_datetime = combine_dicom_date_time(raw_date_value, raw_time_value)
 
-        if parsed_datetime is not None or parsed_date is not None or parsed_time is not None:
-            source = raw_date_source or raw_time_source or f"{date_keyword}+{time_keyword}"
-            return build_time_info_from_value(
-                source=source,
-                raw_date=clean_text(raw_date_value),
-                raw_time=clean_text(raw_time_value),
-                datetime_value=parsed_datetime,
-                date_value=parsed_date,
-                time_value=parsed_time,
-            )
+        if parsed_datetime is None and parsed_date is None and parsed_time is None:
+            continue
 
-    return empty_time_info()
+        source = raw_date_source or raw_time_source or f"{date_keyword}+{time_keyword}"
+        candidate = build_time_info_from_value(
+            source=source,
+            raw_date=clean_text(raw_date_value),
+            raw_time=clean_text(raw_time_value),
+            datetime_value=parsed_datetime,
+            date_value=parsed_date,
+            time_value=parsed_time,
+        )
+
+        if parsed_datetime is not None:
+            return candidate
+
+        candidate_score = 1 if (parsed_date is not None or parsed_time is not None) else 0
+        if parsed_date is not None and parsed_time is not None:
+            candidate_score = 2
+        if candidate_score > best_partial_score:
+            best_partial = candidate
+            best_partial_score = candidate_score
+
+    return best_partial if best_partial is not None else empty_time_info()
 
 
 def parse_float_sequence(value: Any) -> list[float]:
@@ -536,6 +551,45 @@ def apply_time_offset(time_info: ParsedTimeInfo, offset_seconds: float | None, s
         raw_datetime=time_info.raw_datetime,
         raw_date=time_info.raw_date,
         raw_time=time_info.raw_time,
+        datetime_value=shifted_datetime,
+        date_value=shifted_datetime.date(),
+        time_value=shifted_datetime.timetz().replace(tzinfo=None),
+    )
+
+
+def resolve_relative_acquisition_to_study_time(
+    *,
+    base_time_info: ParsedTimeInfo,
+    study_time_info: ParsedTimeInfo,
+) -> ParsedTimeInfo:
+    if base_time_info.datetime_value is None or study_time_info.datetime_value is None:
+        return base_time_info
+
+    source_text = clean_text(base_time_info.source).lower()
+    if "acquisition" not in source_text:
+        return base_time_info
+
+    candidate = base_time_info.datetime_value
+    if candidate.hour != 0:
+        return base_time_info
+
+    reference = study_time_info.datetime_value
+    if candidate.date() != reference.date():
+        return base_time_info
+
+    offset_seconds = (
+        candidate.hour * 3600
+        + candidate.minute * 60
+        + candidate.second
+        + candidate.microsecond / 1_000_000.0
+    )
+    shifted_datetime = reference + timedelta(seconds=offset_seconds)
+
+    return build_time_info_from_value(
+        source=f"{base_time_info.source}+study-offset",
+        raw_datetime=base_time_info.raw_datetime,
+        raw_date=base_time_info.raw_date,
+        raw_time=base_time_info.raw_time,
         datetime_value=shifted_datetime,
         date_value=shifted_datetime.date(),
         time_value=shifted_datetime.timetz().replace(tzinfo=None),
@@ -883,6 +937,12 @@ def load_zeiss_fa_series(input_path: str | Path, *, prefer_fa_only: bool = True)
             ds = safe_dcmread(file_path, stop_before_pixels=False)
             pixel_array = decode_pixel_array(ds)
             split_images = split_frames(pixel_array, ds)
+            study_time_info = extract_time_info(
+                ds,
+                recursive=False,
+                datetime_keywords=(),
+                date_time_pairs=(("StudyDate", "StudyTime"),),
+            )
             base_time_info = extract_time_info(
                 ds,
                 recursive=False,
@@ -893,6 +953,10 @@ def load_zeiss_fa_series(input_path: str | Path, *, prefer_fa_only: bool = True)
                     ("SeriesDate", "SeriesTime"),
                     ("StudyDate", "StudyTime"),
                 ),
+            )
+            base_time_info = resolve_relative_acquisition_to_study_time(
+                base_time_info=base_time_info,
+                study_time_info=study_time_info,
             )
             per_frame_time_infos = extract_per_frame_time_infos(ds, len(split_images))
             relative_time_seconds_list = extract_relative_frame_times(ds, len(split_images))

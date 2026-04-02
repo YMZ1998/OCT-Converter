@@ -53,7 +53,12 @@ class FAViewerRequestHandler(BaseHTTPRequestHandler):
                     contrast_percent=contrast,
                     brightness_offset=brightness,
                 )
-                self._send_bytes(HTTPStatus.OK, payload, "image/png")
+                self._send_bytes(
+                    HTTPStatus.OK,
+                    payload,
+                    "image/png",
+                    cache_control="private, max-age=300",
+                )
                 return
 
             self._send_json(HTTPStatus.NOT_FOUND, {"error": f"Unknown route: {route}"})
@@ -82,12 +87,19 @@ class FAViewerRequestHandler(BaseHTTPRequestHandler):
         content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self._send_bytes(status, content, "application/json; charset=utf-8")
 
-    def _send_bytes(self, status: HTTPStatus, payload: bytes, content_type: str) -> None:
+    def _send_bytes(
+        self,
+        status: HTTPStatus,
+        payload: bytes,
+        content_type: str,
+        *,
+        cache_control: str = "no-store",
+    ) -> None:
         try:
             self.send_response(status.value)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(payload)))
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", cache_control)
             self.end_headers()
             self.wfile.write(payload)
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 from PyQt5.QtCore import QSettings, Qt, QTimer
 from PyQt5.QtGui import QFont, QImage, QKeySequence, QPixmap
 from PyQt5.QtWidgets import (
@@ -67,8 +69,14 @@ VENDOR_AUTO = "auto"
 VENDOR_TOPCON = "topcon"
 VENDOR_ZEISS = "zeiss"
 VENDOR_HDB = "hdb"
+VENDOR_CFP = "cfp"
 TOPCON_IMAGE_GLOB = "IM*.JPG"
 HDB_E2E_GLOB = "*.E2E"
+CFP_IMAGE_SUFFIXES = {".bmp", ".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+CFP_FRAME_PATTERN = re.compile(r"(?:^|[-_])(?P<label>RF|F(?P<number>\d{1,2}))$", re.IGNORECASE)
+CFP_LATERALITY_PATTERN = re.compile(r"(?:^|[-_ ])(?P<eye>OD|OS|R|L)(?=$|[-_ .])", re.IGNORECASE)
+CFP_DATE_INLINE_PATTERN = re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)")
+CFP_DATE_SEPARATOR_PATTERN = re.compile(r"(?<!\d)(20\d{2})[-_/\.](\d{1,2})[-_/\.](\d{1,2})(?!\d)")
 
 
 @dataclass
@@ -139,16 +147,16 @@ def default_input_path() -> Path | None:
 
 def parse_args() -> argparse.Namespace:
     default_path = default_input_path()
-    parser = argparse.ArgumentParser(description="Unified Topcon / Zeiss / HDB FA Qt viewer.")
+    parser = argparse.ArgumentParser(description="Unified Topcon / Zeiss / HDB / CFP FA Qt viewer.")
     parser.add_argument(
         "input_path",
         nargs="?",
         default=str(default_path) if default_path else None,
-        help="Topcon FA folder, Zeiss FA folder/DICOM file, or HDB/Heidelberg E2E file.",
+        help="Topcon FA folder, Zeiss FA folder/DICOM file, HDB/Heidelberg E2E file, or CFP image folder.",
     )
     parser.add_argument(
         "--vendor",
-        choices=(VENDOR_AUTO, VENDOR_TOPCON, VENDOR_ZEISS, VENDOR_HDB),
+        choices=(VENDOR_AUTO, VENDOR_TOPCON, VENDOR_ZEISS, VENDOR_HDB, VENDOR_CFP),
         default=VENDOR_AUTO,
         help="Force the dataset vendor instead of auto-detecting it.",
     )
@@ -198,6 +206,140 @@ def summarize_groups(frames: list[UnifiedFAFrame]) -> str:
     return ", ".join(f"{group} {count}" for group, count in counts.items()) or "-"
 
 
+def _is_cfp_image(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in CFP_IMAGE_SUFFIXES
+
+
+def _find_cfp_images(path: Path) -> list[Path]:
+    if _is_cfp_image(path):
+        return [path.resolve()]
+    if not path.exists() or not path.is_dir():
+        return []
+    images = [candidate for candidate in path.rglob("*") if _is_cfp_image(candidate)]
+    return sorted(images, key=lambda candidate: str(candidate).lower())
+
+
+def _extract_cfp_laterality(*parts: str) -> str:
+    for part in parts:
+        match = CFP_LATERALITY_PATTERN.search(part)
+        if not match:
+            continue
+        eye = match.group("eye").upper()
+        if eye in {"OD", "R"}:
+            return "OD"
+        if eye in {"OS", "L"}:
+            return "OS"
+    return "UNKNOWN"
+
+
+def _parse_cfp_frame_label(stem: str) -> tuple[str, tuple[int, int]]:
+    match = CFP_FRAME_PATTERN.search(stem)
+    if not match:
+        return "-", (2, 0)
+
+    label = match.group("label").upper()
+    number_text = match.group("number")
+    if number_text:
+        return label, (0, int(number_text))
+    return label, (1, 0)
+
+
+def _extract_cfp_study_code(stem: str) -> str:
+    without_frame = re.sub(r"[-_](RF|F\d{1,2})$", "", stem, flags=re.IGNORECASE)
+    without_eye = re.sub(r"[-_](OD|OS|R|L)$", "", without_frame, flags=re.IGNORECASE)
+    return without_eye.strip("-_ ")
+
+
+def _read_image_size(path: Path) -> tuple[int | None, int | None]:
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+            return int(width), int(height)
+    except Exception:
+        return None, None
+
+
+def _parse_cfp_datetime_text(value: str) -> datetime | None:
+    text = value.strip()
+    if not text:
+        return None
+
+    for format_text in (
+        "%Y:%m:%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y:%m:%d %H:%M:%S.%f",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y/%m/%d %H:%M:%S.%f",
+        "%Y:%m:%d",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+    ):
+        try:
+            return datetime.strptime(text, format_text)
+        except ValueError:
+            continue
+    return None
+
+
+def _extract_cfp_datetime_from_metadata(image_path: Path) -> datetime | None:
+    try:
+        with Image.open(image_path) as image:
+            exif = image.getexif() if hasattr(image, "getexif") else None
+            if exif:
+                for tag_code in (36867, 36868, 306):
+                    raw_value = exif.get(tag_code)
+                    if raw_value is None:
+                        continue
+                    parsed = _parse_cfp_datetime_text(str(raw_value))
+                    if parsed is not None:
+                        return parsed
+
+            for key in ("DateTimeOriginal", "DateTime", "date:create", "date:modify"):
+                raw_value = image.info.get(key)
+                if raw_value is None:
+                    continue
+                parsed = _parse_cfp_datetime_text(str(raw_value))
+                if parsed is not None:
+                    return parsed
+    except Exception:
+        return None
+
+    return None
+
+
+def _extract_cfp_datetime_from_path(path: Path) -> datetime | None:
+    candidates = [path.stem] + [part for part in path.parts]
+    for text in candidates:
+        match = CFP_DATE_SEPARATOR_PATTERN.search(text)
+        if match:
+            try:
+                year = int(match.group(1))
+                month = int(match.group(2))
+                day = int(match.group(3))
+                return datetime(year, month, day)
+            except ValueError:
+                pass
+
+        match = CFP_DATE_INLINE_PATTERN.search(text)
+        if match:
+            try:
+                year = int(match.group(1))
+                month = int(match.group(2))
+                day = int(match.group(3))
+                return datetime(year, month, day)
+            except ValueError:
+                pass
+    return None
+
+
+def _extract_cfp_acquisition_datetime(image_path: Path) -> datetime | None:
+    metadata_datetime = _extract_cfp_datetime_from_metadata(image_path)
+    if metadata_datetime is not None:
+        return metadata_datetime
+    return _extract_cfp_datetime_from_path(image_path)
+
+
 def detect_vendor(path: Path) -> str | None:
     container = path if path.is_dir() else path.parent
 
@@ -210,6 +352,8 @@ def detect_vendor(path: Path) -> str | None:
             return VENDOR_HDB
         if path.suffix.lower() in DICOM_SUFFIXES or path.name.upper() == "DICOMDIR":
             return VENDOR_ZEISS
+        if _is_cfp_image(path):
+            return VENDOR_CFP
 
     if container.exists():
         if (container / "DATAFILE").exists():
@@ -227,6 +371,8 @@ def detect_vendor(path: Path) -> str | None:
                 candidate.suffix.lower() in DICOM_SUFFIXES or candidate.name.upper() == "DICOMDIR"
             ):
                 return VENDOR_ZEISS
+        if _find_cfp_images(container):
+            return VENDOR_CFP
 
     return None
 
@@ -560,6 +706,131 @@ def load_zeiss_dataset(input_path: Path) -> UnifiedFADataset:
     )
 
 
+def load_cfp_dataset(input_path: Path) -> UnifiedFADataset:
+    search_root = input_path if input_path.is_dir() else input_path.parent
+    images = _find_cfp_images(input_path if input_path.is_file() else search_root)
+    if not images:
+        raise RuntimeError(f"No CFP image files found in {input_path}")
+
+    frame_entries: list[tuple[tuple[int, str], tuple[int, int], datetime | None, Path, str, str, str, str]] = []
+    study_codes: list[str] = []
+
+    for image_path in images:
+        stem = image_path.stem
+        laterality_key = _extract_cfp_laterality(stem, image_path.parent.name, search_root.name)
+        group_label = laterality_display_text(laterality_key)
+        label, frame_rank = _parse_cfp_frame_label(stem)
+        acquisition_datetime = _extract_cfp_acquisition_datetime(image_path)
+        source_detail = image_path.parent.name or str(image_path.parent)
+        study_code = _extract_cfp_study_code(stem)
+        if study_code:
+            study_codes.append(study_code)
+
+        sort_laterality = {"OD": 0, "OS": 1, "UNKNOWN": 2}.get(laterality_key, 99)
+        frame_entries.append(
+            (
+                (sort_laterality, laterality_key),
+                frame_rank,
+                acquisition_datetime,
+                image_path.resolve(),
+                laterality_key,
+                group_label,
+                label,
+                source_detail,
+            )
+        )
+
+    frame_entries.sort(
+        key=lambda item: (
+            item[0][0],
+            item[1][0],
+            item[1][1],
+            item[2] or datetime.min,
+            item[3].name.lower(),
+        )
+    )
+
+    first_by_eye: dict[str, datetime] = {}
+    for _, _, acquisition_datetime, _, laterality_key, _, _, _ in frame_entries:
+        if acquisition_datetime is None:
+            continue
+        previous = first_by_eye.get(laterality_key)
+        if previous is None or acquisition_datetime < previous:
+            first_by_eye[laterality_key] = acquisition_datetime
+
+    unified_frames: list[UnifiedFAFrame] = []
+    for order_index, (
+        _laterality_sort,
+        _frame_rank,
+        acquisition_datetime,
+        image_path,
+        laterality_key,
+        group_label,
+        label,
+        source_detail,
+    ) in enumerate(frame_entries):
+        width, height = _read_image_size(image_path)
+        first_eye_time = first_by_eye.get(laterality_key)
+        elapsed_seconds: float | None = None
+        if acquisition_datetime is not None and first_eye_time is not None:
+            elapsed_seconds = max(0.0, (acquisition_datetime - first_eye_time).total_seconds())
+        acquisition_display = acquisition_datetime.strftime("%Y-%m-%d %H:%M:%S") if acquisition_datetime else "-"
+
+        unified_frames.append(
+            UnifiedFAFrame(
+                order_index=order_index,
+                vendor=VENDOR_CFP,
+                filename=image_path.name,
+                source_path=image_path,
+                image_array=None,
+                group_key=laterality_key,
+                group_label=group_label,
+                laterality_key=laterality_key,
+                laterality_label=group_label,
+                label=label,
+                source_detail=source_detail,
+                acquisition_datetime=acquisition_datetime,
+                acquisition_display=acquisition_display,
+                elapsed_seconds=elapsed_seconds,
+                width=width,
+                height=height,
+                is_proofsheet=False,
+            )
+        )
+
+    exam_date = "-"
+    datetimes = [frame.acquisition_datetime for frame in unified_frames if frame.acquisition_datetime is not None]
+    if datetimes:
+        exam_date = min(datetimes).strftime("%Y-%m-%d")
+
+    study_code = summarize_values(study_codes, fallback=(search_root.name if search_root else "CFP"))
+    laterality_summary = summarize_values(
+        [frame.laterality_label for frame in unified_frames],
+        fallback="Unknown",
+    )
+
+    normalized_study = UnifiedFAStudyInfo(
+        vendor=VENDOR_CFP,
+        vendor_label="CFP",
+        patient_name=study_code,
+        patient_id=study_code,
+        sex="-",
+        birth_date="-",
+        exam_date=exam_date,
+        laterality=laterality_summary,
+        study_code=study_code,
+        device_model="CFP Image Set",
+    )
+
+    return UnifiedFADataset(
+        vendor=VENDOR_CFP,
+        vendor_label="CFP",
+        input_path=(search_root if search_root else input_path).resolve(),
+        study_info=normalized_study,
+        frames=unified_frames,
+    )
+
+
 def load_unified_dataset(input_path: str | Path, *, vendor: str = VENDOR_AUTO) -> UnifiedFADataset:
     path = Path(input_path).expanduser().resolve()
     if not path.exists():
@@ -571,9 +842,13 @@ def load_unified_dataset(input_path: str | Path, *, vendor: str = VENDOR_AUTO) -
         return load_zeiss_dataset(path)
     if vendor == VENDOR_HDB:
         return load_hdb_dataset(path)
+    if vendor == VENDOR_CFP:
+        return load_cfp_dataset(path)
 
     detected_vendor = detect_vendor(path)
-    candidate_vendors = unique_preserve_order([detected_vendor or "", VENDOR_TOPCON, VENDOR_ZEISS, VENDOR_HDB])
+    candidate_vendors = unique_preserve_order(
+        [detected_vendor or "", VENDOR_TOPCON, VENDOR_ZEISS, VENDOR_HDB, VENDOR_CFP]
+    )
     errors: list[str] = []
 
     for candidate_vendor in candidate_vendors:
@@ -584,6 +859,8 @@ def load_unified_dataset(input_path: str | Path, *, vendor: str = VENDOR_AUTO) -
                 return load_zeiss_dataset(path)
             if candidate_vendor == VENDOR_HDB:
                 return load_hdb_dataset(path)
+            if candidate_vendor == VENDOR_CFP:
+                return load_cfp_dataset(path)
         except Exception as exc:
             errors.append(f"{candidate_vendor}: {exc}")
 
@@ -592,7 +869,7 @@ def load_unified_dataset(input_path: str | Path, *, vendor: str = VENDOR_AUTO) -
 
 
 def frame_to_qpixmap(frame: UnifiedFAFrame) -> QPixmap:
-    if frame.source_path is not None and frame.vendor == VENDOR_TOPCON:
+    if frame.source_path is not None and frame.image_array is None:
         pixmap = QPixmap(str(frame.source_path))
         if not pixmap.isNull():
             return pixmap
@@ -834,6 +1111,7 @@ class UnifiedFAViewerWindow(QMainWindow):
         self.vendor_combo.addItem("Topcon", VENDOR_TOPCON)
         self.vendor_combo.addItem("Zeiss", VENDOR_ZEISS)
         self.vendor_combo.addItem("HDB", VENDOR_HDB)
+        self.vendor_combo.addItem("CFP", VENDOR_CFP)
         initial_index = self.vendor_combo.findData(vendor)
         if initial_index >= 0:
             self.vendor_combo.setCurrentIndex(initial_index)
@@ -896,7 +1174,7 @@ class UnifiedFAViewerWindow(QMainWindow):
         self.path_label.setWordWrap(True)
         self.path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
-        self.summary_label = QLabel("Ready to load Topcon / Zeiss / HDB FA data")
+        self.summary_label = QLabel("Ready to load Topcon / Zeiss / HDB / CFP FA data")
         self.summary_label.setObjectName("SummaryLabel")
         self.summary_label.setWordWrap(True)
 
@@ -1394,7 +1672,7 @@ class UnifiedFAViewerWindow(QMainWindow):
         self.eye_combo.blockSignals(False)
         self._set_frame_detail_state(message)
         self.path_label.setText(message)
-        self.summary_label.setText("Ready to load Topcon / Zeiss / HDB FA data")
+        self.summary_label.setText("Ready to load Topcon / Zeiss / HDB / CFP FA data")
         self.dataset_path_label.setText("-")
         self.dataset_vendor_label.setText("-")
         self.dataset_frames_label.setText("-")
