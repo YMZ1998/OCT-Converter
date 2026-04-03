@@ -159,7 +159,7 @@ def e2e_dicom_metadata(
         series_info = e2e_series_meta(
             image.image_id,
             image.laterality,
-            None,
+            image.acquisition_date,
             image.metadata,
         )
         image_geometry = e2e_image_geom(image.pixel_spacing)
