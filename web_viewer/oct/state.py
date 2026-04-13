@@ -1570,6 +1570,8 @@ class ViewerState:
     ) -> list[OverlayInfo]:
         try:
             metadata = reader.read_all_metadata()
+            from scripts.old.e2e_sort_metadata import sort_metadata
+            metadata = sort_metadata(metadata)
         except Exception:
             metadata = {}
 
@@ -1580,6 +1582,7 @@ class ViewerState:
 
         overlay_infos: list[OverlayInfo] = []
         for index, volume in enumerate(volumes):
+            print(volume.volume_id)
             matched_fundus, matched_index, fundus_match_mode = self._select_matching_fundus_for_e2e(
                 volume,
                 fundus_images,

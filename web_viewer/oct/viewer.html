@@ -1932,7 +1932,6 @@
         if (!text) return "-";
         return text.replace(/T/g, " ");
       };
-
       elements.patientNameValue.textContent = loaded ? (volume?.patientName || "-") : "-";
       elements.patientIdValue.textContent = loaded ? (volume?.patientId || "-") : "-";
       elements.birthDateValue.textContent = loaded ? formatBirthDateValue(volume?.birthDate) : "-";
@@ -2229,24 +2228,57 @@
       }
 
       const lineWidth = options.lineWidth || 1.5;
+      const startX = Number(start[0]);
+      const startY = Number(start[1]);
+      const endX = Number(end[0]);
+      const endY = Number(end[1]);
       ctx2d.save();
       ctx2d.beginPath();
       ctx2d.lineWidth = lineWidth;
+      ctx2d.lineJoin = "round";
+      ctx2d.lineCap = "round";
       ctx2d.strokeStyle = options.strokeStyle || "rgba(56, 189, 248, 0.24)";
       if (options.dash) {
         ctx2d.setLineDash(options.dash);
       }
-      ctx2d.moveTo(Number(start[0]), Number(start[1]));
-      ctx2d.lineTo(Number(end[0]), Number(end[1]));
+      ctx2d.moveTo(startX, startY);
+      ctx2d.lineTo(endX, endY);
       ctx2d.stroke();
 
       if (options.showEndpoints) {
         const radius = Math.max(2, lineWidth * 1.3);
         ctx2d.fillStyle = options.endpointColor || options.strokeStyle || "#f87171";
         ctx2d.beginPath();
-        ctx2d.arc(Number(start[0]), Number(start[1]), radius, 0, Math.PI * 2);
-        ctx2d.arc(Number(end[0]), Number(end[1]), radius, 0, Math.PI * 2);
+        ctx2d.arc(startX, startY, radius, 0, Math.PI * 2);
+        ctx2d.arc(endX, endY, radius, 0, Math.PI * 2);
         ctx2d.fill();
+      }
+
+      if (options.showArrow) {
+        const dx = endX - startX;
+        const dy = endY - startY;
+        const segmentLength = Math.hypot(dx, dy);
+        if (segmentLength > 0.001) {
+          const arrowSize = Math.min(
+            segmentLength * 0.45,
+            Math.max(8, Number(options.arrowSize) || lineWidth * 5),
+          );
+          const angle = Math.atan2(dy, dx);
+          const arrowAngle = Math.PI / 7;
+          ctx2d.fillStyle = options.arrowColor || options.strokeStyle || "rgba(56, 189, 248, 0.24)";
+          ctx2d.beginPath();
+          ctx2d.moveTo(endX, endY);
+          ctx2d.lineTo(
+            endX - arrowSize * Math.cos(angle - arrowAngle),
+            endY - arrowSize * Math.sin(angle - arrowAngle),
+          );
+          ctx2d.lineTo(
+            endX - arrowSize * Math.cos(angle + arrowAngle),
+            endY - arrowSize * Math.sin(angle + arrowAngle),
+          );
+          ctx2d.closePath();
+          ctx2d.fill();
+        }
       }
       ctx2d.restore();
     }
@@ -2317,8 +2349,7 @@
           drawSegment(fundusCtx, activeSegment, {
             lineWidth: baseLineWidth * 1.9,
             strokeStyle: "rgba(248, 113, 113, 0.98)",
-            showEndpoints: true,
-            endpointColor: "#fde68a",
+            showArrow: true,
           });
 
           const labelX = (Number(activeSegment.start[0]) + Number(activeSegment.end[0])) / 2;
@@ -2363,8 +2394,7 @@
       drawSegment(fundusCtx, activeSegment, {
         lineWidth: baseLineWidth * 1.9,
         strokeStyle: "rgba(248, 113, 113, 0.98)",
-        showEndpoints: true,
-        endpointColor: "#fde68a",
+        showArrow: true,
       });
 
       const labelX = (Number(activeSegment.start[0]) + Number(activeSegment.end[0])) / 2;

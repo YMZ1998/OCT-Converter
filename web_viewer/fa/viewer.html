@@ -887,8 +887,8 @@
       };
 
       return (
-        buildScaledModel('elapsed', frames.map(getFrameElapsedValue))
-        || buildScaledModel('acquisition', frames.map(getFrameAcquisitionValue))
+        buildScaledModel('acquisition', frames.map(getFrameAcquisitionValue))
+        || buildScaledModel('elapsed', frames.map(getFrameElapsedValue))
         || { mode: 'index', positions: defaultPositions }
       );
     }

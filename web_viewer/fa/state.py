@@ -129,7 +129,7 @@ def format_time_range(frames: list[UnifiedFAFrame]) -> str:
 
     elapsed_seconds = [frame.elapsed_seconds for frame in frames if frame.elapsed_seconds is not None]
     if elapsed_seconds:
-        return f"+{min(elapsed_seconds):.1f} s ~ +{max(elapsed_seconds):.1f} s"
+        return f"+{min(elapsed_seconds):.3f} s ~ +{max(elapsed_seconds):.3f} s"
     return "-"
 
 

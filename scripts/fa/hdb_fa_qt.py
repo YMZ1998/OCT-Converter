@@ -567,6 +567,21 @@ def frame_sort_key(frame: HeidelbergFAFrame) -> tuple[int, Any, float, int, int]
     )
 
 
+def apply_chunk39_timing_to_frame(
+    frame: HeidelbergFAFrame,
+    timing: Chunk39Timing,
+    *,
+    fallback_timezone1: str = "",
+    fallback_timezone2: str = "",
+) -> None:
+    frame.timezone1 = timing.timezone1 or frame.timezone1 or fallback_timezone1
+    frame.timezone2 = timing.timezone2 or frame.timezone2 or fallback_timezone2
+    frame.time_of_day_ms = timing.time_of_day_ms
+    frame.raw_elapsed_ms = timing.raw_elapsed_ms
+    frame.raw_elapsed_ms_alt = timing.raw_elapsed_ms_alt
+    frame.acquisition_source = timing.source
+
+
 def load_heidelberg_fa_dataset(
     input_path: Optional[str],
 ) -> tuple[Optional[Path], HeidelbergFAStudyInfo, list[HeidelbergFAFrame]]:
@@ -581,7 +596,12 @@ def load_heidelberg_fa_dataset(
     series_metadata: dict[str, dict[str, Any]] = {}
     frames: list[HeidelbergFAFrame] = []
     series_frame_counts: Counter[str] = Counter()
-    pending_timing_by_series: defaultdict[str, deque[Chunk39Timing]] = defaultdict(deque)
+    pending_timing_by_series_and_slice: defaultdict[str, defaultdict[int, deque[Chunk39Timing]]] = defaultdict(
+        lambda: defaultdict(deque)
+    )
+    unmatched_frame_indices_by_series_and_slice: defaultdict[str, defaultdict[int, deque[int]]] = defaultdict(
+        lambda: defaultdict(deque)
+    )
     study_date_value: date | None = None
 
     with input_file.open("rb") as handle:
@@ -720,7 +740,17 @@ def load_heidelberg_fa_dataset(
                     series_entry["timezone1"] = timezone1
                 if timezone2 and not series_entry["timezone2"]:
                     series_entry["timezone2"] = timezone2
-                pending_timing_by_series[series_key].append(timing)
+                pending_frames = unmatched_frame_indices_by_series_and_slice[series_key][chunk.slice_id]
+                if pending_frames:
+                    frame_index = pending_frames.popleft()
+                    apply_chunk39_timing_to_frame(
+                        frames[frame_index],
+                        timing,
+                        fallback_timezone1=series_entry["timezone1"] or study_info.timezone1,
+                        fallback_timezone2=series_entry["timezone2"] or study_info.timezone2,
+                    )
+                else:
+                    pending_timing_by_series_and_slice[series_key][chunk.slice_id].append(timing)
                 continue
 
             if chunk.type == 1073741824 and chunk.ind == 0:
@@ -740,36 +770,45 @@ def load_heidelberg_fa_dataset(
                 image = raw_image.reshape(image_data.height, image_data.width)
                 series_frame_index = series_frame_counts[series_key]
                 series_frame_counts[series_key] += 1
-                timing = pending_timing_by_series[series_key].popleft() if pending_timing_by_series[series_key] else None
+                timing_queue = pending_timing_by_series_and_slice[series_key][chunk.slice_id]
+                timing = timing_queue.popleft() if timing_queue else None
 
                 image_id = f"{series_key}:f{series_frame_index + 1:03d}:s{chunk.slice_id}"
-                frames.append(
-                    HeidelbergFAFrame(
-                        order_index=len(frames),
-                        image_id=image_id,
-                        series_key=series_key,
-                        patient_db_id=chunk.patient_db_id,
-                        study_id=chunk.study_id,
-                        series_id=chunk.series_id,
-                        slice_id=chunk.slice_id,
-                        series_frame_index=series_frame_index,
-                        modality="",
-                        modality_name="",
-                        scan_pattern="",
-                        examined_structure="",
-                        laterality="",
-                        timezone1=(timing.timezone1 if timing else "") or series_entry["timezone1"] or study_info.timezone1,
-                        timezone2=(timing.timezone2 if timing else "") or series_entry["timezone2"] or study_info.timezone2,
-                        time_of_day_ms=timing.time_of_day_ms if timing else None,
-                        raw_elapsed_ms=timing.raw_elapsed_ms if timing else None,
-                        raw_elapsed_ms_alt=timing.raw_elapsed_ms_alt if timing else None,
-                        acquisition_datetime_local=None,
-                        acquisition_source=timing.source if timing else "",
-                        width=int(image_data.width),
-                        height=int(image_data.height),
-                        image=image,
-                    )
+                frame = HeidelbergFAFrame(
+                    order_index=len(frames),
+                    image_id=image_id,
+                    series_key=series_key,
+                    patient_db_id=chunk.patient_db_id,
+                    study_id=chunk.study_id,
+                    series_id=chunk.series_id,
+                    slice_id=chunk.slice_id,
+                    series_frame_index=series_frame_index,
+                    modality="",
+                    modality_name="",
+                    scan_pattern="",
+                    examined_structure="",
+                    laterality="",
+                    timezone1=series_entry["timezone1"] or study_info.timezone1,
+                    timezone2=series_entry["timezone2"] or study_info.timezone2,
+                    time_of_day_ms=None,
+                    raw_elapsed_ms=None,
+                    raw_elapsed_ms_alt=None,
+                    acquisition_datetime_local=None,
+                    acquisition_source="",
+                    width=int(image_data.width),
+                    height=int(image_data.height),
+                    image=image,
                 )
+                if timing is not None:
+                    apply_chunk39_timing_to_frame(
+                        frame,
+                        timing,
+                        fallback_timezone1=series_entry["timezone1"] or study_info.timezone1,
+                        fallback_timezone2=series_entry["timezone2"] or study_info.timezone2,
+                    )
+                frames.append(frame)
+                if timing is None:
+                    unmatched_frame_indices_by_series_and_slice[series_key][chunk.slice_id].append(len(frames) - 1)
 
     if study_date_value is None and study_info.study_datetime_local is not None:
         study_date_value = study_info.study_datetime_local.date()

@@ -117,7 +117,7 @@ class UnifiedFAFrame:
     def elapsed_display(self) -> str:
         if self.elapsed_seconds is None:
             return "-"
-        return f"{self.elapsed_seconds:.1f} s"
+        return f"{self.elapsed_seconds:.3f} s"
 
     @property
     def size_display(self) -> str:
@@ -197,7 +197,7 @@ def format_time_range(frames: list[UnifiedFAFrame]) -> str:
 
     elapsed_seconds = [frame.elapsed_seconds for frame in frames if frame.elapsed_seconds is not None]
     if elapsed_seconds:
-        return f"+{min(elapsed_seconds):.1f} s ~ +{max(elapsed_seconds):.1f} s"
+        return f"+{min(elapsed_seconds):.3f} s ~ +{max(elapsed_seconds):.3f} s"
     return "-"
 
 
@@ -1706,7 +1706,7 @@ def dump_dataset(dataset: UnifiedFADataset) -> None:
     print()
     print("index\tfilename\tgroup\tlabel\telapsed_s\tacquisition")
     for frame in dataset.frames:
-        elapsed = "" if frame.elapsed_seconds is None else f"{frame.elapsed_seconds:.1f}"
+        elapsed = "" if frame.elapsed_seconds is None else f"{frame.elapsed_seconds:.3f}"
         print(
             f"{frame.order_index + 1}\t{frame.filename}\t{frame.group_label}\t{frame.label}\t"
             f"{elapsed}\t{frame.acquisition_display}"

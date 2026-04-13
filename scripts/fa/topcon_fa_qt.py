@@ -103,7 +103,7 @@ class TopconFAStudyInfo:
     @property
     def laterality_display(self) -> str:
         if self.laterality and self.laterality_note:
-            return f"{self.laterality} ({self.laterality_note})"
+            return f"{self.laterality}"
         return self.laterality or "-"
 
     @property

@@ -5,7 +5,7 @@ from oct_converter.readers import FDA
 from scripts.old.dir_process import remove_and_create_dir
 
 
-def test(filepath):
+def fda_test(filepath):
     print("=" * 50)
     # ================= 结果根目录 =================
     result_root = r"E:\\Data\\OCT\\Result"
@@ -70,4 +70,4 @@ if __name__ == "__main__":
     filepath = r"E:\Data\OCT\拓普康OCT"
     for p in os.listdir(filepath):
         if p.endswith(".fda"):
-            test(os.path.join(filepath, p))
+            fda_test(os.path.join(filepath, p))

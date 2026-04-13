@@ -134,6 +134,7 @@ class E2E(object):
                     volume_string = "{}_{}_{}".format(
                         chunk.patient_db_id, chunk.study_id, chunk.series_id
                     )
+                    # print(volume_string)
                     if volume_string not in volume_dict.keys():
                         volume_dict[volume_string] = chunk.slice_id / 2
                     elif chunk.slice_id / 2 > volume_dict[volume_string]:
@@ -183,8 +184,8 @@ class E2E(object):
                         else:
                             try:
                                 julian_birthdate = (
-                                    patient_data.birthdate / 64
-                                ) - 14558805
+                                                       patient_data.birthdate / 64
+                                                   ) - 14558805
                                 self.birthdate = self.julian_to_ymd(julian_birthdate)
                                 # TODO: There are conflicting ideas of how to parse E2E's birthdate
                                 # https://bitbucket.org/uocte/uocte/wiki/Heidelberg%20File%20Format suggests the above,
@@ -356,7 +357,8 @@ class E2E(object):
                     scan_pattern=_extract_metadata_scan_pattern(metadata, key),
                 )
                 oct_volumes.append(oct_volume)
-
+        # 根据id排序
+        oct_volumes = sorted(oct_volumes, key=lambda v: int(v.volume_id.split('_')[-1]))
         return oct_volumes
 
     def read_fundus_image(
@@ -557,6 +559,7 @@ class E2E(object):
                 elif chunk.type == 10004:  # bscan metadata
                     raw = f.read(104)
                     bscan_metadata = e2e_binary.bscan_metadata.parse(raw)
+                    # print("bscan metadata", bscan_metadata)
                     metadata["bscan_data"].append(_convert_to_dict(bscan_metadata))
 
                 elif chunk.type == 1073741824:  # fundus data

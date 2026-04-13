@@ -32,6 +32,10 @@ def run(filepath):
             f"{volume.volume_id}_{volume.laterality}.tiff"
         )
         # volume.peek(show_contours=True)
+        print(f"[INFO] OCT volume: {volume.num_slices} {volume.laterality} {volume.scan_pattern}")
+        print(volume.metadata.keys())
+        print(len(volume.metadata['image_data']))
+        print(len(volume.metadata['image_data']))
         volume.save(out_tiff)
         print(f"[OK] TIFF saved: {out_tiff}")
 
@@ -49,7 +53,7 @@ def run(filepath):
     # ================= Metadata → JSON =================
     metadata = file.read_all_metadata()
     meta_path = os.path.join(output_dir, "metadata.json")
-
+    # print(metadata)
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=4, ensure_ascii=False)
 
@@ -72,6 +76,7 @@ def run(filepath):
 if __name__ == "__main__":
     # ================= 输入文件 =================
     filepath1 = r"E:\Data\OCT\海德堡\海德堡FA.E2E"
-    filepath2 = r"E:\Data\OCT\海德堡\海德堡OCT.E2E"
-    run(filepath1)
+    # filepath2 = r"E:\Data\OCT\海德堡\海德堡OCT.E2E"
+    filepath2 = r"E:\Data\OCT2\海德堡\KH902-R10-007-D-007001DME-V4-OCT.E2E"
+    # run(filepath1)
     run(filepath2)

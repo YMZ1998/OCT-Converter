@@ -109,7 +109,7 @@ class FDA(object):
             patient_dob = datetime(*patient_info.get("birth_date"))
         except (TypeError, ValueError):
             patient_dob = None
-
+        # print("Patient info:", patient_info)
         oct_volume = OCTVolumeWithMetaData(
             volume,
             patient_id=patient_info.get("patient_id"),

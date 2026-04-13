@@ -6,17 +6,33 @@ import numpy as np
 # 导入 OCT 数据
 # ev = ep.import_heyex_e2e(r"E:\Data\OCT\海德堡\海德堡FA.E2E")
 # ev = ep.import_heyex_e2e(r"E:\Data\OCT\海德堡\海德堡OCT.E2E")
-ev = ep.import_topcon_fda(r"E:\Data\OCT\拓普康OCT\41368.fda")
+# ev = ep.import_heyex_e2e(r"E:\Data\OCT2\海德堡\KH902-R10-007-D-007001DME-V4-OCT.E2E")
+ev = ep.import_topcon_fda(r"E:\Data\OCT\拓普康OCT\41365.fda")
 # ev = ep.import_topcon_fda(r"E:\Data\OCT\拓普康OCT\41365.fda")
-
+# for i, v in enumerate(ev):
+#     print(i, type(v))
+print("------")
+keys = list(ev.meta.keys())
+print(keys)
+for k in ev.meta:
+    print("------")
+    print(k)
+    print(ev.meta[k])
+print("------")
 fundus = ev.localizer.data
+# print(ev.localizer_transform)
+# print(fundus.shape)
+# print(ev.data.shape)
 
 # 计算每条 B-scan 在 fundus 上的位置坐标范围
 bscan_coords = []
 all_x = []
 all_y = []
-
+i = 0
 for m in ev.meta["bscan_meta"]:
+    # print("--", i)
+    # i = i + 1
+    # print(m)
     x1, y1 = m["start_pos"]
     x2, y2 = m["end_pos"]
     region = (slice(0, fundus.shape[0]), slice(0, fundus.shape[1]))
@@ -25,7 +41,7 @@ for m in ev.meta["bscan_meta"]:
     bscan_coords.append((p1, p2))
     all_x.extend([p1[0], p2[0]])
     all_y.extend([p1[1], p2[1]])
-
+# print(bscan_coords)
 # 总覆盖范围矩形
 x_min, x_max = min(all_x), max(all_x)
 y_min, y_max = min(all_y), max(all_y)
@@ -65,9 +81,10 @@ rect_total = patches.Rectangle(
     height_total,
     linewidth=3,
     edgecolor='r',
-    facecolor='none'   # 不填充，只显示线框
+    facecolor='none'  # 不填充，只显示线框
 )
 ax[0].add_patch(rect_total)
+
 
 # 点击事件更新矩形和 B-scan
 def on_click(event):
@@ -76,8 +93,8 @@ def on_click(event):
         min_dist = float('inf')
         nearest_idx = 0
         for i, (p1, p2) in enumerate(bscan_coords):
-            cx, cy = (p1[0]+p2[0])/2, (p1[1]+p2[1])/2
-            dist = np.sqrt((event.xdata - cx)**2 + (event.ydata - cy)**2)
+            cx, cy = (p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2
+            dist = np.sqrt((event.xdata - cx) ** 2 + (event.ydata - cy) ** 2)
             if dist < min_dist:
                 min_dist = dist
                 nearest_idx = i
@@ -93,6 +110,7 @@ def on_click(event):
         ax[1].imshow(bscan, cmap='gray', aspect='auto')
         ax[1].axis('off')
         fig.canvas.draw_idle()
+
 
 fig.canvas.mpl_connect('button_press_event', on_click)
 plt.show()
