@@ -10,6 +10,7 @@ from construct import StreamError, StringError
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.uid import (
     ExplicitVRLittleEndian,
+    OphthalmicPhotography16BitImageStorage,
     OphthalmicTomographyImageStorage,
     generate_uid,
 )
@@ -275,6 +276,7 @@ def write_fundus_dicom(
     ds = populate_manufacturer_info(ds, meta)
     ds = populate_opt_series(ds, meta)
     ds.Modality = "OP"
+    ds.SOPClassUID = OphthalmicPhotography16BitImageStorage
     ds = populate_ocular_region(ds, meta)
 
     ds.PixelSpacing = meta.image_geometry.pixel_spacing
@@ -338,6 +340,7 @@ def write_color_fundus_dicom(
     ds = populate_manufacturer_info(ds, meta)
     ds = populate_opt_series(ds, meta)
     ds.Modality = "OP"
+    ds.SOPClassUID = OphthalmicPhotography16BitImageStorage
     ds = populate_ocular_region(ds, meta)
 
     ds.PixelSpacing = meta.image_geometry.pixel_spacing

@@ -40,6 +40,7 @@ class FundusImageWithMetaData(object):
         patient_id: str | None = None,
         image_id: str | None = None,
         patient_dob: str | None = None,
+        acquisition_date: str | None = None,
         metadata: dict | None = None,
         pixel_spacing: list[float] | None = None,
         patient_name: str | None = None,
@@ -57,6 +58,7 @@ class FundusImageWithMetaData(object):
         self.sex = sex
         self.device_name = device_name
         self.scan_pattern = scan_pattern
+        self.acquisition_date = acquisition_date
         self.metadata = metadata
         self.pixel_spacing = pixel_spacing
 

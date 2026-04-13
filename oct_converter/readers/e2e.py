@@ -184,8 +184,8 @@ class E2E(object):
                         else:
                             try:
                                 julian_birthdate = (
-                                                       patient_data.birthdate / 64
-                                                   ) - 14558805
+                                    patient_data.birthdate / 64
+                                ) - 14558805
                                 self.birthdate = self.julian_to_ymd(julian_birthdate)
                                 # TODO: There are conflicting ideas of how to parse E2E's birthdate
                                 # https://bitbucket.org/uocte/uocte/wiki/Heidelberg%20File%20Format suggests the above,
@@ -356,9 +356,7 @@ class E2E(object):
                     device_name=_extract_metadata_device_name(metadata),
                     scan_pattern=_extract_metadata_scan_pattern(metadata, key),
                 )
-                oct_volumes.append(oct_volume)
-        # 根据id排序
-        oct_volumes = sorted(oct_volumes, key=lambda v: int(v.volume_id.split('_')[-1]))
+
         return oct_volumes
 
     def read_fundus_image(
@@ -472,6 +470,7 @@ class E2E(object):
                     laterality=laterality_dict[key]
                     if key in laterality_dict.keys()
                     else None,
+                    acquisition_date=self.acquisition_date,
                     metadata=metadata,
                     pixel_spacing=[scalex, scalex],
                     device_name=_extract_metadata_device_name(metadata),
@@ -559,7 +558,6 @@ class E2E(object):
                 elif chunk.type == 10004:  # bscan metadata
                     raw = f.read(104)
                     bscan_metadata = e2e_binary.bscan_metadata.parse(raw)
-                    # print("bscan metadata", bscan_metadata)
                     metadata["bscan_data"].append(_convert_to_dict(bscan_metadata))
 
                 elif chunk.type == 1073741824:  # fundus data
@@ -626,9 +624,12 @@ class E2E(object):
                     metadata["eye_data"].append(_convert_to_dict(eye_data))
 
                 elif chunk.type == 39:  # time zone, possibly timestamps
-                    raw = f.read(chunk.size)
-                    time_data = e2e_binary.time_data.parse(raw)
-                    metadata["time_data"].append(_convert_to_dict(time_data))
+                    try:
+                        raw = f.read(chunk.size)
+                        time_data = e2e_binary.time_data.parse(raw)
+                        metadata["time_data"].append(_convert_to_dict(time_data))
+                    except StreamError:
+                        pass
 
                 elif chunk.type in [52, 54, 1000, 1001]:  # various UIDs
                     try:
