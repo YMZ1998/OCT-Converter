@@ -356,7 +356,9 @@ class E2E(object):
                     device_name=_extract_metadata_device_name(metadata),
                     scan_pattern=_extract_metadata_scan_pattern(metadata, key),
                 )
-
+                oct_volumes.append(oct_volume)
+        # 根据id排序
+        oct_volumes = sorted(oct_volumes, key=lambda v: int(v.volume_id.split('_')[-1]))
         return oct_volumes
 
     def read_fundus_image(
