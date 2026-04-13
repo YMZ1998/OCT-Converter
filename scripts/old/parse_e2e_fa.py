@@ -19,7 +19,7 @@ def run(filepath):
 
     for image in fundus_images:
         print("-----------------------------")
-        print(f"[INFO] OCT image id: {image.image_id}")
+        print(f"[INFO] OCT image id: {image.image_id, image.acquisition_date}")
         # for key, value in metadata.items():
         #     print(f"[INFO] {key}: {len(value)}")
         bscans = metadata.get("bscan_data", [])

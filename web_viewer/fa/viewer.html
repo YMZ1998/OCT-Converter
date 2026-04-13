@@ -848,10 +848,20 @@
       return Number.isFinite(value) ? value / 1000 : null;
     }
 
+    function formatElapsedSeconds(value) {
+      return Number.isFinite(value) ? `${value.toFixed(3)} s` : '-';
+    }
+
+    function getFramePrimaryTimeText(frame) {
+      if (!frame) return '-';
+      if (frame.elapsedDisplay && frame.elapsedDisplay !== '-') return frame.elapsedDisplay;
+      return frame.acquisitionDisplay || '-';
+    }
+
     function getTimelineLabelForFrame(frame, mode) {
       if (!frame) return '-';
       if (mode === 'elapsed') {
-        return frame.elapsedDisplay || frame.acquisitionDisplay || '-';
+        return getFramePrimaryTimeText(frame);
       }
       if (mode === 'acquisition') {
         return frame.acquisitionDisplay || formatTimelineDateTime(frame.acquisitionDatetime) || frame.elapsedDisplay || '-';
@@ -859,8 +869,8 @@
       return `Frame ${frame.originalIndex + 1}`;
     }
 
-    function getTimelineModeLabel(mode) {
-      if (mode === 'elapsed') return '相对时间';
+    function getTimelineModeLabel(mode, { perGroup = false } = {}) {
+      if (mode === 'elapsed') return perGroup ? '相对时间（分组）' : '相对时间';
       if (mode === 'acquisition') return '采集时间';
       return '帧顺序';
     }
@@ -870,9 +880,43 @@
         frames.length <= 1 ? 0.5 : index / (frames.length - 1)
       ));
 
-      const buildScaledModel = (mode, values) => {
+      const buildScaledModel = (mode, values, { perGroup = false } = {}) => {
         const validValues = values.filter((value) => value !== null);
         if (validValues.length < 2) return null;
+
+        if (perGroup) {
+          const groupRanges = new Map();
+          values.forEach((value, index) => {
+            if (value === null) return;
+            const key = frames[index]?.groupKey || frames[index]?.groupLabel || 'ALL';
+            const previous = groupRanges.get(key);
+            if (!previous) {
+              groupRanges.set(key, { min: value, max: value });
+              return;
+            }
+            previous.min = Math.min(previous.min, value);
+            previous.max = Math.max(previous.max, value);
+          });
+
+          if (![...groupRanges.values()].some((range) => range.max > range.min)) {
+            return null;
+          }
+
+          return {
+            mode,
+            perGroup: true,
+            positions: values.map((value, index) => {
+              if (value === null) return defaultPositions[index];
+              const key = frames[index]?.groupKey || frames[index]?.groupLabel || 'ALL';
+              const range = groupRanges.get(key);
+              if (!range || !Number.isFinite(range.min) || !Number.isFinite(range.max) || range.max <= range.min) {
+                return defaultPositions[index];
+              }
+              return (value - range.min) / (range.max - range.min);
+            }),
+          };
+        }
+
         const minValue = Math.min(...validValues);
         const maxValue = Math.max(...validValues);
         if (!Number.isFinite(minValue) || !Number.isFinite(maxValue) || maxValue <= minValue) {
@@ -880,6 +924,7 @@
         }
         return {
           mode,
+          perGroup: false,
           positions: values.map((value, index) => (
             value === null ? defaultPositions[index] : (value - minValue) / (maxValue - minValue)
           )),
@@ -887,9 +932,9 @@
       };
 
       return (
-        buildScaledModel('acquisition', frames.map(getFrameAcquisitionValue))
-        || buildScaledModel('elapsed', frames.map(getFrameElapsedValue))
-        || { mode: 'index', positions: defaultPositions }
+        buildScaledModel('elapsed', frames.map(getFrameElapsedValue), { perGroup: true })
+        || buildScaledModel('acquisition', frames.map(getFrameAcquisitionValue))
+        || { mode: 'index', perGroup: false, positions: defaultPositions }
       );
     }
 
@@ -922,12 +967,21 @@
       const model = buildTimelineModel(state.visibleFrames);
       state.timelineModel = model;
 
-      els.timelineSummary.textContent = `${getTimelineModeLabel(model.mode)} · ${state.visibleFrames.length} 帧`;
-      els.timelineStartLabel.textContent = getTimelineLabelForFrame(state.visibleFrames[0], model.mode);
-      els.timelineEndLabel.textContent = getTimelineLabelForFrame(
-        state.visibleFrames[state.visibleFrames.length - 1],
-        model.mode,
-      );
+      els.timelineSummary.textContent = `${getTimelineModeLabel(model.mode, { perGroup: model.perGroup })} · ${state.visibleFrames.length} 帧`;
+      if (model.mode === 'elapsed' && model.perGroup) {
+        const elapsedValues = state.visibleFrames
+          .map(getFrameElapsedValue)
+          .filter((value) => value !== null);
+        const maxElapsed = elapsedValues.length ? Math.max(...elapsedValues) : null;
+        els.timelineStartLabel.textContent = '0.000 s';
+        els.timelineEndLabel.textContent = formatElapsedSeconds(maxElapsed);
+      } else {
+        els.timelineStartLabel.textContent = getTimelineLabelForFrame(state.visibleFrames[0], model.mode);
+        els.timelineEndLabel.textContent = getTimelineLabelForFrame(
+          state.visibleFrames[state.visibleFrames.length - 1],
+          model.mode,
+        );
+      }
 
       els.timelineTrack.innerHTML = '';
       state.visibleFrames.forEach((frame, visibleIndex) => {
@@ -1256,7 +1310,7 @@
       const dataset = state.payload.dataset || {};
       const groupText = frame.groupLabel || dataset.vendorLabel || 'FA';
       const eyeText = frame.lateralityLabel || dataset.laterality || '-';
-      const timeText = frame.acquisitionDisplay || '-';
+      const timeText = getFramePrimaryTimeText(frame);
 
       els.frameSlider.max = Math.max(state.visibleFrames.length - 1, 0);
       els.frameSlider.value = normalized;

@@ -658,7 +658,8 @@ class E2E(object):
                     metadata["additional_device_data"].append(
                         {chunk.type: _convert_to_dict(unknown_data)}
                     )
-
+        from scripts.old.e2e_sort_metadata import sort_metadata
+        metadata = sort_metadata(metadata)
         return metadata
 
     def read_custom_float(self, bytes: str) -> float:
