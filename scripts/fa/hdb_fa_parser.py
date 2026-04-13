@@ -4,7 +4,6 @@ import argparse
 import json
 import struct
 import sys
-import unicodedata
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -12,6 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
+import unicodedata
 from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -476,7 +476,7 @@ def build_frame_metadata_text(
 
 
 def frame_sort_key(frame: HeidelbergFAFrame) -> tuple[int, Any, float, int, int]:
-    slice_sort = frame.slice_id if frame.slice_id >= 0 else 10**9 + frame.series_frame_index
+    slice_sort = frame.slice_id if frame.slice_id >= 0 else 10 ** 9 + frame.series_frame_index
     time_marker = (
         frame.acquisition_datetime_local
         if frame.acquisition_datetime_local is not None
@@ -548,7 +548,7 @@ def load_heidelberg_fa_dataset(
             raw_header = handle.read(60)
             try:
                 chunk = e2e_binary.chunk_structure.parse(raw_header)
-                print(chunk)
+                # print(chunk)
             except Exception:
                 continue
             series_key = f"{chunk.patient_db_id}_{chunk.study_id}_{chunk.series_id}"
@@ -685,6 +685,8 @@ def load_heidelberg_fa_dataset(
             if chunk.type == 1073741824 and chunk.ind == 0:
                 try:
                     image_data = e2e_binary.image_structure.parse(handle.read(20))
+                    # print("image_data: ", image_data)
+                    # print("image_data.height: ", image_data.height)
                 except Exception:
                     continue
 
@@ -824,7 +826,7 @@ def dump_frames(frames: list[HeidelbergFAFrame]) -> None:
     ]
 
     widths = [
-        max(_display_width(header), *( _display_width(row[index]) for row in rows))
+        max(_display_width(header), *(_display_width(row[index]) for row in rows))
         for index, header in enumerate(headers)
     ] if rows else [_display_width(header) for header in headers]
 
@@ -901,7 +903,8 @@ def build_track_label(
     display_laterality = infer_group_laterality(frames, laterality)
     laterality_text = viewer_laterality_label(display_laterality)
     first_iso = next((frame.acquisition_datetime_iso for frame in frames if frame.acquisition_datetime_iso), None)
-    last_iso = next((frame.acquisition_datetime_iso for frame in reversed(frames) if frame.acquisition_datetime_iso), None)
+    last_iso = next((frame.acquisition_datetime_iso for frame in reversed(frames) if frame.acquisition_datetime_iso),
+                    None)
     time_suffix = ""
     if first_iso and last_iso and first_iso != last_iso:
         time_suffix = f" | {first_iso.split('T')[-1]} → {last_iso.split('T')[-1]}"
@@ -986,9 +989,10 @@ def summarize_tracks_for_console(tracks: list[HeidelbergViewerTrack]) -> list[st
 def frame_time_text(frame: HeidelbergFAFrame) -> str:
     return frame.time_display
 
+
 if __name__ == "__main__":
     filepath = r"E:\Data\OCT2\海德堡\KH902-R10-007-007003DME-V1-FFA\KH902-R10-007-007003DME-V1-FFA-OD.E2E"
 
     input_file, study_info, frames = load_heidelberg_fa_dataset(filepath)
-    dump_study_info(study_info)
-    dump_frames(frames)
+    # dump_study_info(study_info)
+    # dump_frames(frames)

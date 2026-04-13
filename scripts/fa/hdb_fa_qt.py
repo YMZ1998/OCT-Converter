@@ -64,7 +64,7 @@ from hdb_fa_parser import (
     save_image_array,
     summarize_tracks_for_console,
     viewer_laterality_label,
-    viewer_laterality_short_label,
+    viewer_laterality_short_label, resolve_input_file, build_frame_metadata_text,
 )
 
 def image_to_qpixmap(image: np.ndarray) -> "QPixmap":
@@ -1216,7 +1216,6 @@ if QT_AVAILABLE:
                 f"\nDevice: {self.study_info.device_display} | Study: {self.study_info.study_datetime_iso} | "
                 f"TZ: {self.study_info.timezone_display}"
             )
-            summary_text += f"\nNote: {self.study_info.timing_note}"
             self.summary_label.setText(summary_text)
 
         def current_track(self) -> HeidelbergViewerTrack | None:
@@ -1564,30 +1563,13 @@ if QT_AVAILABLE:
 
 
 def main() -> int:
-    args = parse_args()
-    input_file, study_info, frames = load_heidelberg_fa_dataset(args.input_path)
-
-    if args.dump:
-        if hasattr(sys.stdout, "reconfigure"):
-            sys.stdout.reconfigure(encoding="utf-8")
-        if input_file is None or not frames:
-            print("没有解析到海德堡 FA 数据。")
-            return 1
-        dump_study_info(study_info)
-        dump_frames(frames)
-        return 0
-
-    if not QT_AVAILABLE:
-        print("PyQt5 未安装，无法启动 Qt 查看器。可以先使用 --dump 验证解析结果。")
-        return 1
-
     if hasattr(Qt, "AA_EnableHighDpiScaling"):
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     application = QApplication(sys.argv)
     application.setApplicationName("HeidelbergFAQtViewer")
     application.setStyle("Fusion")
 
-    window = HeidelbergFAZeissViewerWindow(args.input_path)
+    window = HeidelbergFAZeissViewerWindow(DEFAULT_INPUT_PATH)
     window.show()
     return application.exec_()
 
