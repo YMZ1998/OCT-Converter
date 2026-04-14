@@ -39,6 +39,15 @@ def get_zeiss_reader_class():
     return ZEISSDicom
 
 
+def ensure_zeiss_fundus_orientation(image_or_fundus: Any) -> np.ndarray:
+    image = np.asarray(getattr(image_or_fundus, "image", image_or_fundus))
+    if getattr(image_or_fundus, "orientation_normalized", False):
+        return image
+
+    ZEISSDicom = get_zeiss_reader_class()
+    return ZEISSDicom.normalize_fundus_orientation(image)
+
+
 def clean_text(value: Any) -> str:
     if value is None:
         return ""
@@ -204,7 +213,7 @@ def save_oct_exports(
 def save_fundus_exports(image_array: np.ndarray, output_dir: Path) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    image = np.asarray(image_array)
+    image = ensure_zeiss_fundus_orientation(image_array)
     image_uint8 = normalize_uint8(image)
 
     png_path = output_dir / "fundus.png"
@@ -387,7 +396,8 @@ def export_decoded_outputs(
             )
 
     for index, image in enumerate(fundus_images):
-        fundus_uint8 = normalize_uint8(image.image)
+        corrected_image = ensure_zeiss_fundus_orientation(image)
+        fundus_uint8 = normalize_uint8(corrected_image)
 
         if want_preview:
             preview_path = (
@@ -400,7 +410,7 @@ def export_decoded_outputs(
 
         if want_export:
             fundus_dir = output_dir / "exports" / exam_id / base_stem / f"fundus_{index:02d}"
-            fundus_assets.append(save_fundus_exports(image.image, fundus_dir))
+            fundus_assets.append(save_fundus_exports(corrected_image, fundus_dir))
 
     return {
         "decoded_oct_count": len(oct_volumes),

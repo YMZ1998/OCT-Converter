@@ -21,6 +21,14 @@ class ZEISSDicom(object):
         if not self.filepath.exists():
             raise FileNotFoundError(self.filepath)
 
+    @staticmethod
+    def normalize_fundus_orientation(image: np.ndarray) -> np.ndarray:
+        """Rotate Zeiss fundus frames into the same display space as the OCT data."""
+        array = np.asarray(image)
+        if array.ndim < 2:
+            raise ValueError(f"Unsupported Zeiss fundus image shape: {array.shape}")
+        return np.rot90(array, axes=(0, 1), k=3).copy()
+
     def find_oct_tags(self, dataset, data_element):
         if data_element.tag == (0x0407, 0x1005):
             num_frames = len(data_element.value)
@@ -33,7 +41,7 @@ class ZEISSDicom(object):
                     np.frombuffer(unscrambled_frame, np.uint8), flags=1
                 )
                 if num_frames == 1:
-                    volume = frame
+                    volume = self.normalize_fundus_orientation(frame)
                 else:
                     # is grayscale so we take the first channel
                     volume.append(frame[:, :, 0])
@@ -71,13 +79,13 @@ class ZEISSDicom(object):
                 )
             )
         for image in self.all_fundus:
-            all_fundus_out.append(
-                FundusImageWithMetaData(
-                    image=image,
-                    patient_id=ds.PatientID,
-                    laterality=ds.Laterality,
-                )
+            fundus_image = FundusImageWithMetaData(
+                image=image,
+                patient_id=ds.PatientID,
+                laterality=ds.Laterality,
             )
+            fundus_image.orientation_normalized = True
+            all_fundus_out.append(fundus_image)
 
         # pass 2
         if "PixelData" in ds:
@@ -118,13 +126,13 @@ class ZEISSDicom(object):
                 frame = cv2.imdecode(
                     np.frombuffer(unscrambled_frame, np.uint8), flags=1
                 )
-                all_fundus_out.append(
-                    FundusImageWithMetaData(
-                        image=frame,
-                        patient_id=ds.PatientID,
-                        laterality=ds.Laterality,
-                    )
+                fundus_image = FundusImageWithMetaData(
+                    image=self.normalize_fundus_orientation(frame),
+                    patient_id=ds.PatientID,
+                    laterality=ds.Laterality,
                 )
+                fundus_image.orientation_normalized = True
+                all_fundus_out.append(fundus_image)
 
         return all_oct_out, all_fundus_out
 

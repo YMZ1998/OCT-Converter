@@ -35,10 +35,10 @@ FILE_DIALOG_TYPES = [
 
 VENDOR_MODE_LABELS = {
     "auto": "自动识别",
-    "heidelberg": "海德堡 E2E",
-    "topcon": "拓普康 FDA/FDS",
+    "heidelberg": "海德堡",
+    "topcon": "拓普康",
     "shiwei": "视微",
-    "tupai": "Tupai DICOM",
+    "tupai": "Tupai",
 }
 
 VENDOR_MODE_ALIASES = {
@@ -76,7 +76,7 @@ VENDOR_MODE_EXTENSIONS: dict[str, tuple[str, ...]] = {
 VENDOR_MODE_FILE_DIALOG_TYPES: dict[str, list[tuple[str, str]]] = {
     "auto": FILE_DIALOG_TYPES,
     "heidelberg": [("Heidelberg E2E", "*.e2e *.E2E"), ("All files", "*.*")],
-    "topcon": [("Topcon FDA/FDS", "*.fda *.FDA *.fds *.FDS"), ("All files", "*.*")],
+    "topcon": [("Topcon", "*.fda *.FDA *.fds *.FDS"), ("All files", "*.*")],
     "shiwei": [("DICOM", "*.dcm *.DCM *.dicom *.DICOM"), ("All files", "*.*")],
     "tupai": [("DICOM", "*.dcm *.DCM *.dicom *.DICOM"), ("All files", "*.*")],
 }
