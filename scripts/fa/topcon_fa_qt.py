@@ -37,11 +37,22 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-
-DEFAULT_INPUT_DIR = Path(r"E:\Data\OCT\topcon-FA")
-IMAGE_NAME_PATTERN = re.compile(rb"IM\d{6}\.JPG", re.IGNORECASE)
-ELAPSED_LABEL_PATTERN = re.compile(r"^(?P<minutes>\d+):(?P<seconds>\d{1,2}(?:\.\d+)?)$")
-LATERALITY_PATTERN = re.compile(r"(?:^|[-_/ ])(?P<eye>OD|OS|R|L)(?=\d|\b)", re.IGNORECASE)
+try:
+    from .topcon_fa_parser import (
+        DEFAULT_INPUT_DIR,
+        TopconFAFrame,
+        TopconFAStudyInfo,
+        load_topcon_fa_dataset,
+        modality_summary,
+    )
+except ImportError:
+    from topcon_fa_parser import (
+        DEFAULT_INPUT_DIR,
+        TopconFAFrame,
+        TopconFAStudyInfo,
+        load_topcon_fa_dataset,
+        modality_summary,
+    )
 
 
 @dataclass
@@ -359,6 +370,24 @@ def load_topcon_fa_frames(input_path: Optional[str]) -> tuple[Optional[Path], li
 def modality_summary(frames: list[TopconFAFrame]) -> str:
     counts = Counter(frame.modality for frame in frames)
     return ", ".join(f"{modality} {count}" for modality, count in counts.items()) or "-"
+
+
+try:
+    from .topcon_fa_parser import (
+        DEFAULT_INPUT_DIR,
+        TopconFAFrame,
+        TopconFAStudyInfo,
+        load_topcon_fa_dataset,
+        modality_summary,
+    )
+except ImportError:
+    from topcon_fa_parser import (
+        DEFAULT_INPUT_DIR,
+        TopconFAFrame,
+        TopconFAStudyInfo,
+        load_topcon_fa_dataset,
+        modality_summary,
+    )
 
 
 class ScaledImageLabel(QLabel):

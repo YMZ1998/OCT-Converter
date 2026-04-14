@@ -1045,6 +1045,28 @@ def load_zeiss_fa_series(input_path: str | Path, *, prefer_fa_only: bool = True)
     return series_records
 
 
+try:
+    from .zeiss_fa_parser import (
+        DEFAULT_INPUT_PATH,
+        FrameRecord,
+        SeriesRecord,
+        clean_text,
+        load_zeiss_fa_series,
+        normalize_to_uint8,
+        summarize_series_timing,
+    )
+except ImportError:
+    from zeiss_fa_parser import (
+        DEFAULT_INPUT_PATH,
+        FrameRecord,
+        SeriesRecord,
+        clean_text,
+        load_zeiss_fa_series,
+        normalize_to_uint8,
+        summarize_series_timing,
+    )
+
+
 @dataclass
 class FAViewerFrame:
     image: np.ndarray
