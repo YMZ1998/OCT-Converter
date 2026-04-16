@@ -526,6 +526,7 @@ def build_radial_segments(
     reference_start: tuple[float, float],
     reference_end: tuple[float, float],
     fundus_shape: tuple[int, int] | tuple[int, int, int],
+    effective_bounds: tuple[float, float, float, float] | None = None,
 ) -> list[tuple[tuple[float, float], tuple[float, float]]]:
     if num_slices <= 0 or radius <= 1e-8:
         return []
@@ -545,10 +546,67 @@ def build_radial_segments(
     for index in range(num_slices):
         angle = base_angle + index * angle_step
         vector = np.array([np.cos(angle), np.sin(angle)], dtype=float)
-        start = clamp_point_to_shape(center_array - radius * vector, fundus_shape)
-        end = clamp_point_to_shape(center_array + radius * vector, fundus_shape)
+        segment = None
+        if effective_bounds is not None:
+            segment = clip_infinite_line_to_ellipse(center_array, vector, effective_bounds)
+
+        if segment is None:
+            start = clamp_point_to_shape(center_array - radius * vector, fundus_shape)
+            end = clamp_point_to_shape(center_array + radius * vector, fundus_shape)
+        else:
+            start = clamp_point_to_shape(segment[0], fundus_shape)
+            end = clamp_point_to_shape(segment[1], fundus_shape)
         segments.append((start, end))
     return segments
+
+
+def clip_infinite_line_to_ellipse(
+    point: tuple[float, float] | np.ndarray,
+    direction: tuple[float, float] | np.ndarray,
+    bounds: tuple[float, float, float, float],
+    eps: float = 1e-8,
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    left, top, right, bottom = bounds
+    center_x = (left + right) / 2.0
+    center_y = (top + bottom) / 2.0
+    radius_x = (right - left) / 2.0
+    radius_y = (bottom - top) / 2.0
+    if radius_x <= eps or radius_y <= eps:
+        return None
+
+    px, py = [float(value) for value in point]
+    dx, dy = [float(value) for value in direction]
+
+    coeff_a = (dx * dx) / (radius_x * radius_x) + (dy * dy) / (radius_y * radius_y)
+    if coeff_a <= eps:
+        return None
+
+    coeff_b = 2.0 * (
+        ((px - center_x) * dx) / (radius_x * radius_x)
+        + ((py - center_y) * dy) / (radius_y * radius_y)
+    )
+    coeff_c = (
+        ((px - center_x) * (px - center_x)) / (radius_x * radius_x)
+        + ((py - center_y) * (py - center_y)) / (radius_y * radius_y)
+        - 1.0
+    )
+    discriminant = coeff_b * coeff_b - 4.0 * coeff_a * coeff_c
+    if discriminant < -eps:
+        return None
+
+    discriminant = max(discriminant, 0.0)
+    sqrt_discriminant = float(np.sqrt(discriminant))
+    t_values = [
+        (-coeff_b - sqrt_discriminant) / (2.0 * coeff_a),
+        (-coeff_b + sqrt_discriminant) / (2.0 * coeff_a),
+    ]
+    points = []
+    for t_value in sorted(t_values):
+        points.append((px + t_value * dx, py + t_value * dy))
+
+    if len(points) < 2:
+        return None
+    return points[0], points[-1]
 
 
 def get_fda_scan_mode(volume: Any) -> int | None:
@@ -578,7 +636,19 @@ def get_fda_scan_mode(volume: Any) -> int | None:
 
 def get_fda_radial_geometry(
     metadata: dict[str, Any],
-) -> tuple[tuple[float, float], float, tuple[float, float], tuple[float, float]] | None:
+) -> tuple[
+    tuple[float, float],
+    float,
+    tuple[float, float],
+    tuple[float, float],
+    tuple[float, float, float, float] | None,
+] | None:
+    effective_bounds = None
+    effective_range = metadata.get("effective_scan_range") or {}
+    effective_bbox = effective_range.get("bounding_box_fundus_pixel")
+    if isinstance(effective_bbox, (list, tuple)) and len(effective_bbox) == 4:
+        effective_bounds = tuple(float(value) for value in effective_bbox)
+
     regist_info = metadata.get("regist_info") or {}
     reg_bbox = regist_info.get("bounding_box_in_fundus_pixels")
     if isinstance(reg_bbox, (list, tuple)) and len(reg_bbox) == 4:
@@ -586,15 +656,13 @@ def get_fda_radial_geometry(
         if y1_or_flag == 0.0 and x1_or_half > 0.0:
             center = (x0, y0)
             radius = x1_or_half
-            return center, radius, (x0 - radius, y0), (x0 + radius, y0)
+            return center, radius, (x0 - radius, y0), (x0 + radius, y0), effective_bounds
 
-    effective_range = metadata.get("effective_scan_range") or {}
-    effective_bbox = effective_range.get("bounding_box_fundus_pixel")
-    if isinstance(effective_bbox, (list, tuple)) and len(effective_bbox) == 4:
-        left, top, right, bottom = [float(value) for value in effective_bbox]
+    if effective_bounds is not None:
+        left, top, right, bottom = effective_bounds
         center = ((left + right) / 2.0, (top + bottom) / 2.0)
         radius = min(abs(right - left), abs(bottom - top)) / 2.0
-        return center, radius, (center[0] - radius, center[1]), (center[0] + radius, center[1])
+        return center, radius, (center[0] - radius, center[1]), (center[0] + radius, center[1]), effective_bounds
 
     return None
 
@@ -2323,7 +2391,7 @@ class ViewerState:
         if get_fda_scan_mode(volume) == 3:
             radial_geometry = get_fda_radial_geometry(metadata)
             if radial_geometry is not None:
-                center, radius, reference_start, reference_end = radial_geometry
+                center, radius, reference_start, reference_end, effective_bounds = radial_geometry
                 radial_segments = build_radial_segments(
                     num_slices,
                     center,
@@ -2331,6 +2399,7 @@ class ViewerState:
                     reference_start,
                     reference_end,
                     fundus_shape,
+                    effective_bounds=effective_bounds,
                 )
                 if radial_segments:
                     return radial_segments, "radial-regist"
