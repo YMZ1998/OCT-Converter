@@ -507,6 +507,98 @@ def build_repeated_line_segments(
     return [(start, end) for _ in range(num_slices)]
 
 
+def clamp_point_to_shape(
+    point: tuple[float, float] | np.ndarray,
+    fundus_shape: tuple[int, int] | tuple[int, int, int],
+) -> tuple[float, float]:
+    height, width = fundus_shape[:2]
+    x_pos, y_pos = [float(value) for value in point]
+    return (
+        max(0.0, min(float(width - 1), x_pos)),
+        max(0.0, min(float(height - 1), y_pos)),
+    )
+
+
+def build_radial_segments(
+    num_slices: int,
+    center: tuple[float, float],
+    radius: float,
+    reference_start: tuple[float, float],
+    reference_end: tuple[float, float],
+    fundus_shape: tuple[int, int] | tuple[int, int, int],
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    if num_slices <= 0 or radius <= 1e-8:
+        return []
+
+    center_array = np.asarray(center, dtype=float)
+    direction = np.asarray(reference_end, dtype=float) - np.asarray(reference_start, dtype=float)
+    length = float(np.hypot(direction[0], direction[1]))
+    if length <= 1e-8:
+        direction = np.array([1.0, 0.0], dtype=float)
+    else:
+        direction /= length
+
+    base_angle = float(np.arctan2(direction[1], direction[0]))
+    angle_step = np.pi / float(num_slices)
+
+    segments = []
+    for index in range(num_slices):
+        angle = base_angle + index * angle_step
+        vector = np.array([np.cos(angle), np.sin(angle)], dtype=float)
+        start = clamp_point_to_shape(center_array - radius * vector, fundus_shape)
+        end = clamp_point_to_shape(center_array + radius * vector, fundus_shape)
+        segments.append((start, end))
+    return segments
+
+
+def get_fda_scan_mode(volume: Any) -> int | None:
+    candidates = [
+        getattr(volume, "oct_header", None) or {},
+        getattr(volume, "metadata", None) or {},
+    ]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        nested_candidates = [
+            candidate,
+            candidate.get("img_mot_comp_03") or {},
+            candidate.get("capture_info_02") or candidate.get("capture_info") or {},
+            candidate.get("param_scan_02") or {},
+        ]
+        for nested in nested_candidates:
+            if not isinstance(nested, dict):
+                continue
+            raw_value = nested.get("scan_mode")
+            try:
+                return int(raw_value)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def get_fda_radial_geometry(
+    metadata: dict[str, Any],
+) -> tuple[tuple[float, float], float, tuple[float, float], tuple[float, float]] | None:
+    regist_info = metadata.get("regist_info") or {}
+    reg_bbox = regist_info.get("bounding_box_in_fundus_pixels")
+    if isinstance(reg_bbox, (list, tuple)) and len(reg_bbox) == 4:
+        x0, y0, x1_or_half, y1_or_flag = [float(value) for value in reg_bbox]
+        if y1_or_flag == 0.0 and x1_or_half > 0.0:
+            center = (x0, y0)
+            radius = x1_or_half
+            return center, radius, (x0 - radius, y0), (x0 + radius, y0)
+
+    effective_range = metadata.get("effective_scan_range") or {}
+    effective_bbox = effective_range.get("bounding_box_fundus_pixel")
+    if isinstance(effective_bbox, (list, tuple)) and len(effective_bbox) == 4:
+        left, top, right, bottom = [float(value) for value in effective_bbox]
+        center = ((left + right) / 2.0, (top + bottom) / 2.0)
+        radius = min(abs(right - left), abs(bottom - top)) / 2.0
+        return center, radius, (center[0] - radius, center[1]), (center[0] + radius, center[1])
+
+    return None
+
+
 def build_parallel_segments(
     num_slices: int,
     fundus_shape: tuple[int, int] | tuple[int, int, int],
@@ -2227,6 +2319,21 @@ class ViewerState:
         num_slices = self._slice_count(volume)
         if not isinstance(metadata, dict) or num_slices <= 0:
             return None, "missing"
+
+        if get_fda_scan_mode(volume) == 3:
+            radial_geometry = get_fda_radial_geometry(metadata)
+            if radial_geometry is not None:
+                center, radius, reference_start, reference_end = radial_geometry
+                radial_segments = build_radial_segments(
+                    num_slices,
+                    center,
+                    radius,
+                    reference_start,
+                    reference_end,
+                    fundus_shape,
+                )
+                if radial_segments:
+                    return radial_segments, "radial-regist"
 
         scan_params = metadata.get("param_scan_04") or metadata.get("param_scan_02") or {}
         y_dimension_mm = float(scan_params.get("y_dimension_mm") or 0.0)

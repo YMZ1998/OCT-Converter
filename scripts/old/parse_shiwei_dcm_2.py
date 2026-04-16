@@ -1,7 +1,8 @@
 import os
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pydicom
-import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 
 # -------------------------------
@@ -43,20 +44,22 @@ fig, ax = plt.subplots(figsize=(6, 6))
 plt.subplots_adjust(bottom=0.2)
 slice_idx = 0
 im = ax.imshow(vol_b[slice_idx], cmap='gray')
-ax.set_title(f"B-scan slice {slice_idx}, angle {angles[slice_idx]:.2f}°")
+ax.set_title(f"B-scan slice {slice_idx + 1}/{num_slices}")
 ax.axis('off')
 
 # -------------------------------
 # 滑动条
 # -------------------------------
 ax_slider = plt.axes([0.2, 0.05, 0.6, 0.03])
-slider = Slider(ax_slider, 'Slice', 0, num_slices-1, valinit=slice_idx, valstep=1)
+slider = Slider(ax_slider, 'Slice', 1, num_slices, valinit=slice_idx, valstep=1)
+
 
 def update(val):
     idx = int(slider.val)
-    im.set_data(vol_b[idx])
-    ax.set_title(f"B-scan slice {idx}, angle {angles[idx]:.2f}°")
+    im.set_data(vol_b[idx - 1])
+    ax.set_title(f"B-scan slice {idx}/{num_slices}")
     fig.canvas.draw_idle()
+
 
 slider.on_changed(update)
 

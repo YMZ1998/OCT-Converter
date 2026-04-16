@@ -4,6 +4,9 @@ import numpy as np
 from oct_converter.readers import FDA
 
 
+RADIAL_SCAN_MODE = 3
+
+
 def clamp_bounds_to_shape(bounds, fundus_shape):
     height, width = fundus_shape[:2]
     left, top, right, bottom = [float(value) for value in bounds]
@@ -35,6 +38,15 @@ def build_horizontal_segments_from_bounds(num_slices, bounds):
 
 def build_repeated_line_segments(num_slices, start, end):
     return [(start, end) for _ in range(max(0, num_slices))]
+
+
+def clamp_point_to_shape(point, fundus_shape):
+    height, width = fundus_shape[:2]
+    x_pos, y_pos = point
+    return (
+        max(0.0, min(float(width - 1), float(x_pos))),
+        max(0.0, min(float(height - 1), float(y_pos))),
+    )
 
 
 def clip_infinite_line_to_rect(point, direction, bounds, eps=1e-8):
@@ -71,6 +83,31 @@ def clip_infinite_line_to_rect(point, direction, bounds, eps=1e-8):
 
     deduped.sort(key=lambda item: item[0])
     return deduped[0][1], deduped[-1][1]
+
+
+def build_radial_segments(num_slices, center, radius, reference_start, reference_end, fundus_shape):
+    if num_slices <= 0 or radius <= 1e-8:
+        return []
+
+    center = np.asarray(center, dtype=float)
+    direction = np.asarray(reference_end, dtype=float) - np.asarray(reference_start, dtype=float)
+    length = float(np.hypot(direction[0], direction[1]))
+    if length <= 1e-8:
+        direction = np.array([1.0, 0.0], dtype=float)
+    else:
+        direction /= length
+
+    base_angle = float(np.arctan2(direction[1], direction[0]))
+    angle_step = np.pi / float(num_slices)
+
+    segments = []
+    for index in range(num_slices):
+        angle = base_angle + index * angle_step
+        vector = np.array([np.cos(angle), np.sin(angle)], dtype=float)
+        start = clamp_point_to_shape(center - radius * vector, fundus_shape)
+        end = clamp_point_to_shape(center + radius * vector, fundus_shape)
+        segments.append((start, end))
+    return segments
 
 
 def build_rotated_parallel_segments(num_slices, axis_start, axis_end, bounds):
@@ -140,13 +177,68 @@ def get_motion_axis(metadata):
     return start, end
 
 
-def parse_fda_localizer_segments(metadata, fundus_shape, num_slices):
+def get_scan_mode(metadata, oct_header=None):
+    candidates = [
+        oct_header or {},
+        metadata.get("img_mot_comp_03") or {},
+        metadata.get("capture_info_02") or metadata.get("capture_info") or {},
+        metadata.get("param_scan_02") or {},
+    ]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        raw_value = candidate.get("scan_mode")
+        try:
+            return int(raw_value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def get_radial_geometry(metadata):
+    regist_info = metadata.get("regist_info") or {}
+    reg_bbox = regist_info.get("bounding_box_in_fundus_pixels")
+    if isinstance(reg_bbox, (list, tuple)) and len(reg_bbox) == 4:
+        x0, y0, x1_or_half, y1_or_flag = [float(value) for value in reg_bbox]
+        if y1_or_flag == 0.0 and x1_or_half > 0.0:
+            center = (x0, y0)
+            radius = x1_or_half
+            return center, radius, (x0 - radius, y0), (x0 + radius, y0)
+
+    effective_range = metadata.get("effective_scan_range") or {}
+    effective_bbox = effective_range.get("bounding_box_fundus_pixel")
+    if isinstance(effective_bbox, (list, tuple)) and len(effective_bbox) == 4:
+        left, top, right, bottom = [float(value) for value in effective_bbox]
+        center = ((left + right) / 2.0, (top + bottom) / 2.0)
+        radius = min(abs(right - left), abs(bottom - top)) / 2.0
+        return center, radius, (center[0] - radius, center[1]), (center[0] + radius, center[1])
+
+    return None
+
+
+def parse_fda_localizer_segments(metadata, fundus_shape, num_slices, oct_header=None):
     metadata = metadata or {}
 
     scan_params = metadata.get("param_scan_04") or metadata.get("param_scan_02") or {}
     y_dimension_mm = float(scan_params.get("y_dimension_mm") or 0.0)
     motion_axis = get_motion_axis(metadata)
     full_image_bounds = (0.0, 0.0, float(fundus_shape[1] - 1), float(fundus_shape[0] - 1))
+    scan_mode = get_scan_mode(metadata, oct_header=oct_header)
+
+    if scan_mode == RADIAL_SCAN_MODE:
+        radial_geometry = get_radial_geometry(metadata)
+        if radial_geometry is not None:
+            center, radius, reference_start, reference_end = radial_geometry
+            radial_segments = build_radial_segments(
+                num_slices,
+                center,
+                radius,
+                reference_start,
+                reference_end,
+                fundus_shape,
+            )
+            if radial_segments:
+                return radial_segments, "radial-regist"
 
     regist_info = metadata.get("regist_info") or {}
     reg_bbox = regist_info.get("bounding_box_in_fundus_pixels")
@@ -239,9 +331,14 @@ def parse_fda_localizer_segments(metadata, fundus_shape, num_slices):
     return None, "missing"
 
 
-def draw_localizer_lines(fundus_img, metadata, num_slices):
+def draw_localizer_lines(fundus_img, metadata, num_slices, oct_header=None):
     image = np.asarray(fundus_img)
-    segments, mode = parse_fda_localizer_segments(metadata, image.shape, num_slices)
+    segments, mode = parse_fda_localizer_segments(
+        metadata,
+        image.shape,
+        num_slices,
+        oct_header=oct_header,
+    )
 
     plt.figure(figsize=(7, 7))
     plt.imshow(image)
@@ -282,11 +379,17 @@ def run(filepath):
     metadata = volume.metadata or {}
 
     print("[INFO] num_slices:", volume.num_slices)
+    print("[INFO] scan_mode:", volume.oct_header.get("scan_mode") if volume.oct_header else None)
     print("[INFO] img_mot_comp_02:", metadata.get("img_mot_comp_02"))
     print("[INFO] regist_info:", metadata.get("regist_info"))
     print("[INFO] effective_scan_range:", metadata.get("effective_scan_range"))
 
-    draw_localizer_lines(fundus.image, metadata, volume.num_slices)
+    draw_localizer_lines(
+        fundus.image,
+        metadata,
+        volume.num_slices,
+        oct_header=volume.oct_header,
+    )
 
 
 if __name__ == "__main__":
