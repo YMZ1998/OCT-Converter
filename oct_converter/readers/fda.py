@@ -10,7 +10,17 @@ import numpy as np
 from construct import ListContainer
 from PIL import Image
 
-from oct_converter.image_types import FundusImageWithMetaData, OCTVolumeWithMetaData
+from oct_converter.image_types import (
+    DeviceInfo,
+    FundusImageWithMetaData,
+    FundusMetadataModel,
+    ImageGeometry,
+    OCTMetadataModel,
+    OCTVolumeWithMetaData,
+    PatientInfo,
+    SeriesInfo,
+    SourceInfo,
+)
 from oct_converter.readers.binary_structs import fda_binary
 
 
@@ -112,18 +122,30 @@ class FDA(object):
         # print("Patient info:", patient_info)
         oct_volume = OCTVolumeWithMetaData(
             volume,
-            patient_id=patient_info.get("patient_id"),
-            first_name=patient_info.get("first_name"),
-            surname=patient_info.get("last_name"),
-            sex=sex_map[patient_info.get("sex", None)],
-            patient_dob=patient_dob,
-            acquisition_date=datetime(*capture_info.get("cap_date")),
-            laterality=lat_map[capture_info.get("eye", None)],
-            contours=contours,
-            pixel_spacing=pixel_spacing,
-            metadata=metadata,
-            header=self.header,
-            oct_header=oct_header,
+            metadata_model=OCTMetadataModel(
+                source=SourceInfo(
+                    vendor="Topcon",
+                    file_format="FDA",
+                    filepath=self.filepath,
+                ),
+                patient=PatientInfo(
+                    patient_id=patient_info.get("patient_id"),
+                    first_name=patient_info.get("first_name"),
+                    surname=patient_info.get("last_name"),
+                    sex=sex_map[patient_info.get("sex", None)],
+                    patient_dob=patient_dob,
+                ),
+                series=SeriesInfo(
+                    acquisition_date=datetime(*capture_info.get("cap_date")),
+                    laterality=lat_map[capture_info.get("eye", None)],
+                ),
+                device=DeviceInfo(vendor="Topcon"),
+                geometry=ImageGeometry(pixel_spacing=pixel_spacing),
+                metadata=metadata,
+                header=self.header,
+                oct_header=oct_header,
+                contours=contours,
+            ),
         )
         return oct_volume
 
@@ -238,7 +260,17 @@ class FDA(object):
             image = np.asarray(image)
             # store with RGB channel order
             image = np.flip(image, 2)
-        fundus_image = FundusImageWithMetaData(image)
+        fundus_image = FundusImageWithMetaData(
+            image,
+            metadata_model=FundusMetadataModel(
+                source=SourceInfo(
+                    vendor="Topcon",
+                    file_format="FDA",
+                    filepath=self.filepath,
+                ),
+                device=DeviceInfo(vendor="Topcon"),
+            ),
+        )
         return fundus_image
 
     def read_fundus_image_gray_scale(self) -> FundusImageWithMetaData:
@@ -259,7 +291,17 @@ class FDA(object):
             raw_image = f.read(img_trc_02_header.size)
             image = Image.open(io.BytesIO(raw_image))
             image = np.asarray(image)
-        fundus_gray_scale_image = FundusImageWithMetaData(image)
+        fundus_gray_scale_image = FundusImageWithMetaData(
+            image,
+            metadata_model=FundusMetadataModel(
+                source=SourceInfo(
+                    vendor="Topcon",
+                    file_format="FDA",
+                    filepath=self.filepath,
+                ),
+                device=DeviceInfo(vendor="Topcon"),
+            ),
+        )
         return fundus_gray_scale_image
 
     def read_segmentation(self) -> dict:

@@ -14,9 +14,14 @@ from typing import Any
 import cv2
 import numpy as np
 
-from oct_converter.image_types import FundusImageWithMetaData
 from oct_converter.readers import BOCT, Dicom, E2E, FDA, FDS, IMG, POCT
 
+from .dataset_types import (
+    ShiweiOCTDataset,
+    TupaiOCTDataset,
+    VendorOverlayData,
+    ZeissOCTDataset,
+)
 from .vendor_modes import (
     FILE_DIALOG_TYPES,
     NORMALIZED_SUPPORTED_EXTENSIONS,
@@ -1113,44 +1118,44 @@ class ViewerState:
 
     def _build_tupai_loaded_dataset(
         self,
-        tupai_dataset: dict[str, Any],
+        tupai_dataset: TupaiOCTDataset,
         source_meta: dict[str, str],
     ) -> LoadedDataset:
-        dataset_dir = str(tupai_dataset.get("dataset_dir") or source_meta["source_path"])
+        dataset_dir = str(tupai_dataset.dataset_dir or source_meta["source_path"])
         return LoadedDataset(
             source_path=dataset_dir,
             source_kind=source_meta["source_kind"],
             recent_path=dataset_dir,
             reader_name="TupaiDicomDataset",
-            volumes=[tupai_dataset["volume"]],
-            fundus_images=[tupai_dataset["fundus"]],
-            overlay_infos=self._build_tupai_overlay_infos(tupai_dataset),
+            volumes=tupai_dataset.volumes,
+            fundus_images=tupai_dataset.fundus_images,
+            overlay_infos=self._build_vendor_overlay_infos(tupai_dataset.overlays),
         )
 
     def _build_shiwei_loaded_dataset(
         self,
-        shiwei_dataset: dict[str, Any],
+        shiwei_dataset: ShiweiOCTDataset,
         source_meta: dict[str, str],
     ) -> LoadedDataset:
-        dataset_dir = str(shiwei_dataset.get("input_dir") or source_meta["source_path"])
+        dataset_dir = str(shiwei_dataset.input_dir or source_meta["source_path"])
         return LoadedDataset(
             source_path=dataset_dir,
             source_kind=source_meta["source_kind"],
             recent_path=dataset_dir,
             reader_name="ShiweiDicomDataset",
-            volumes=[shiwei_dataset["volume"]],
-            fundus_images=[shiwei_dataset["fundus"]],
-            overlay_infos=self._build_shiwei_overlay_infos(shiwei_dataset),
+            volumes=shiwei_dataset.volumes,
+            fundus_images=shiwei_dataset.fundus_images,
+            overlay_infos=self._build_vendor_overlay_infos(shiwei_dataset.overlays),
         )
 
     def _build_zeiss_loaded_dataset(
         self,
-        zeiss_dataset: dict[str, Any],
+        zeiss_dataset: ZeissOCTDataset,
         source_meta: dict[str, str],
     ) -> LoadedDataset:
-        exam_dirs = zeiss_dataset.get("exam_dirs") or []
+        exam_dirs = zeiss_dataset.exam_dirs or []
         dataset_path = (
-            str(zeiss_dataset.get("input_path") or source_meta["source_path"])
+            str(zeiss_dataset.input_path or source_meta["source_path"])
             if len(exam_dirs) != 1
             else str(exam_dirs[0])
         )
@@ -1159,9 +1164,9 @@ class ViewerState:
             source_kind=source_meta["source_kind"],
             recent_path=dataset_path,
             reader_name="ZeissDicomDataset",
-            volumes=list(zeiss_dataset.get("volumes") or []),
-            fundus_images=list(zeiss_dataset.get("fundus_images") or []),
-            overlay_infos=self._build_zeiss_overlay_infos(zeiss_dataset),
+            volumes=list(zeiss_dataset.volumes),
+            fundus_images=list(zeiss_dataset.fundus_images),
+            overlay_infos=self._build_vendor_overlay_infos(zeiss_dataset.overlays),
         )
 
     def _build_reader_loaded_dataset(
@@ -1500,7 +1505,7 @@ class ViewerState:
         path: Path,
         *,
         vendor_mode: str = "auto",
-    ) -> dict[str, Any] | None:
+    ) -> ZeissOCTDataset | None:
         normalized_mode = normalize_vendor_mode(vendor_mode)
         if normalized_mode != "auto":
             return None
@@ -1519,7 +1524,7 @@ class ViewerState:
         path: Path,
         *,
         vendor_mode: str = "auto",
-    ) -> dict[str, Any] | None:
+    ) -> ShiweiOCTDataset | None:
         normalized_mode = normalize_vendor_mode(vendor_mode)
         if normalized_mode not in {"auto", "shiwei"}:
             return None
@@ -1542,7 +1547,7 @@ class ViewerState:
         path: Path,
         *,
         vendor_mode: str = "auto",
-    ) -> dict[str, Any] | None:
+    ) -> TupaiOCTDataset | None:
         normalized_mode = normalize_vendor_mode(vendor_mode)
         if normalized_mode not in {"auto", "tupai"}:
             return None
@@ -1560,36 +1565,10 @@ class ViewerState:
     def _resolve_tupai_dataset_dir(self, path: Path) -> Path | None:
         return resolve_tupai_input_dir(path)
 
-    def _build_shiwei_overlay_infos(self, dataset: dict[str, Any]) -> list[OverlayInfo]:
-        fundus = dataset.get("fundus")
-        raw_segments = [
-            (
-                (float(start[0]), float(start[1])),
-                (float(end[0]), float(end[1])),
-            )
-            for start, end in dataset.get("segments", [])
-        ]
-        bounds = compute_scan_bounds(raw_segments)
-        warning = ""
-        if not raw_segments:
-            warning = "Shiwei frame location metadata unavailable; overlay falls back to fundus only."
-
-        return [
-            OverlayInfo(
-                matched_fundus_index=0 if isinstance(fundus, FundusImageWithMetaData) else -1,
-                matched_fundus_label=getattr(fundus, "image_id", None) or "Shiwei fundus",
-                fundus_match_mode="shiwei-directory",
-                overlay_mode="shiwei-metadata",
-                projection_mode="shiwei-metadata",
-                localizer_mode="ophthalmic-frame-location-sequence",
-                warning=warning,
-                scan_segments=raw_segments,
-                bounds=bounds,
-            )
-        ]
-
-    def _build_zeiss_overlay_infos(self, dataset: dict[str, Any]) -> list[OverlayInfo]:
-        overlays = dataset.get("overlays") or []
+    def _build_vendor_overlay_infos(
+        self,
+        overlays: list[VendorOverlayData],
+    ) -> list[OverlayInfo]:
         overlay_infos: list[OverlayInfo] = []
         for overlay in overlays:
             raw_segments = [
@@ -1597,64 +1576,26 @@ class ViewerState:
                     (float(start[0]), float(start[1])),
                     (float(end[0]), float(end[1])),
                 )
-                for start, end in overlay.get("scan_segments", [])
+                for start, end in overlay.scan_segments
             ]
-            raw_bounds = overlay.get("bounds")
-            bounds = (
-                tuple(float(value) for value in raw_bounds)
-                if isinstance(raw_bounds, (list, tuple)) and len(raw_bounds) == 4
-                else compute_scan_bounds(raw_segments)
+            raw_bounds = overlay.bounds
+            bounds = compute_scan_bounds(raw_segments) if raw_bounds is None else tuple(
+                float(value) for value in raw_bounds
             )
             overlay_infos.append(
                 OverlayInfo(
-                    matched_fundus_index=int(overlay.get("matched_fundus_index", -1)),
-                    matched_fundus_label=str(overlay.get("matched_fundus_label") or "Zeiss fundus"),
-                    fundus_match_mode=str(overlay.get("fundus_match_mode") or "zeiss-dicom"),
-                    overlay_mode=str(overlay.get("overlay_mode") or "zeiss-dicom"),
-                    projection_mode=str(overlay.get("projection_mode") or "zeiss-dicom"),
-                    localizer_mode=str(overlay.get("localizer_mode") or "zeiss-dicom"),
-                    warning=str(overlay.get("warning") or ""),
+                    matched_fundus_index=int(overlay.matched_fundus_index),
+                    matched_fundus_label=str(overlay.matched_fundus_label or ""),
+                    fundus_match_mode=str(overlay.fundus_match_mode or ""),
+                    overlay_mode=str(overlay.overlay_mode or ""),
+                    projection_mode=str(overlay.projection_mode or ""),
+                    localizer_mode=str(overlay.localizer_mode or ""),
+                    warning=str(overlay.warning or ""),
                     scan_segments=raw_segments,
                     bounds=bounds,
                 )
             )
         return overlay_infos
-
-    def _build_tupai_overlay_infos(self, dataset: dict[str, Any]) -> list[OverlayInfo]:
-        fundus = dataset.get("fundus")
-        full_segments = [
-            (
-                (float(start[0]), float(start[1])),
-                (float(end[0]), float(end[1])),
-            )
-            for start, end in dataset.get("segments", [])
-        ]
-        band_segments = [
-            (
-                (float(start[0]), float(start[1])),
-                (float(end[0]), float(end[1])),
-            )
-            for start, end in dataset.get("segment_coordinates", [])
-        ]
-        scan_segments = full_segments or band_segments
-        bounds = compute_scan_bounds(scan_segments)
-        warning = ""
-        if not scan_segments:
-            warning = "Tupai frame location metadata unavailable; overlay falls back to fundus only."
-
-        return [
-            OverlayInfo(
-                matched_fundus_index=0 if isinstance(fundus, FundusImageWithMetaData) else -1,
-                matched_fundus_label=getattr(fundus, "image_id", None) or "Tupai fundus",
-                fundus_match_mode="tupai-directory",
-                overlay_mode="tupai-metadata",
-                projection_mode=str(dataset.get("coordinate_mode") or "tupai"),
-                localizer_mode=str(dataset.get("segment_mode") or "ophthalmic-frame-location-sequence"),
-                warning=warning,
-                scan_segments=scan_segments,
-                bounds=bounds,
-            )
-        ]
 
     def _build_parallel_overlay_infos(
         self,

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from oct_converter.image_types import OCTVolumeWithMetaData
+from oct_converter.image_types import (
+    DeviceInfo,
+    ImageGeometry,
+    OCTMetadataModel,
+    OCTVolumeWithMetaData,
+    SourceInfo,
+)
 
 
 class Dicom(object):
@@ -25,5 +31,21 @@ class Dicom(object):
                 "This appears to be a Zeiss DCM. You may need to read with the ZEISSDCM class."
             )
         pixel_data = dicom_data.pixel_array
-        oct_volume = OCTVolumeWithMetaData(volume=pixel_data)
+        oct_volume = OCTVolumeWithMetaData(
+            volume=pixel_data,
+            metadata_model=OCTMetadataModel(
+                source=SourceInfo(
+                    vendor=getattr(dicom_data, "Manufacturer", None),
+                    file_format="DICOM",
+                    filepath=self.filepath,
+                ),
+                device=DeviceInfo(
+                    vendor=getattr(dicom_data, "Manufacturer", None),
+                    device_name=getattr(dicom_data, "ManufacturerModelName", None),
+                ),
+                geometry=ImageGeometry(
+                    pixel_spacing=list(getattr(dicom_data, "PixelSpacing", [])) or None
+                ),
+            ),
+        )
         return oct_volume

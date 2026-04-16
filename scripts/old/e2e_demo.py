@@ -78,5 +78,6 @@ if __name__ == "__main__":
     filepath1 = r"E:\Data\OCT\海德堡\海德堡FA.E2E"
     # filepath2 = r"E:\Data\OCT\海德堡\海德堡OCT.E2E"
     filepath2 = r"E:\Data\OCT2\海德堡\KH902-R10-007-D-007001DME-V4-OCT.E2E"
+    filepath3 = r"E:\Data\OCT2\海德堡\H1AMD328.E2E"
     # run(filepath1)
     run(filepath2)

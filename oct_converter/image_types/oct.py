@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import cv2
 import imageio
@@ -9,6 +10,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tifffile as tiff
 
+from oct_converter.image_types.metadata_types import (
+    DeviceInfo,
+    ImageGeometry,
+    OCTMetadataModel,
+    PatientInfo,
+    SeriesInfo,
+    SourceInfo,
+)
 from oct_converter.image_types.write_image import cv2_imwrite_safe
 
 VIDEO_TYPES = [
@@ -64,35 +73,189 @@ class OCTVolumeWithMetaData(object):
         patient_name: str | None = None,
         device_name: str | None = None,
         scan_pattern: str | None = None,
+        metadata_model: OCTMetadataModel | None = None,
     ) -> None:
         # image
         self.volume = volume
-
-        # patient data
-        self.patient_id = patient_id
-        self.patient_name = patient_name
-        self.first_name = first_name
-        self.surname = surname
-        self.sex = sex
-        self.DOB = patient_dob
-        self.patient_dob = patient_dob
-
-        # volume data
-        self.volume_id = volume_id
-        self.acquisition_date = acquisition_date
-        self.laterality = laterality
+        self.meta = metadata_model or OCTMetadataModel(
+            patient=PatientInfo(
+                patient_id=patient_id,
+                patient_name=patient_name,
+                first_name=first_name,
+                surname=surname,
+                sex=sex,
+                patient_dob=patient_dob,
+            ),
+            series=SeriesInfo(
+                volume_id=volume_id,
+                acquisition_date=acquisition_date,
+                laterality=laterality,
+                scan_pattern=scan_pattern,
+            ),
+            device=DeviceInfo(device_name=device_name),
+            geometry=ImageGeometry(pixel_spacing=pixel_spacing),
+            metadata=metadata,
+            header=header,
+            oct_header=oct_header,
+            contours=contours,
+        )
         self.num_slices = len(self.volume)
-        self.contours = contours
-        self.device_name = device_name
-        self.scan_pattern = scan_pattern
 
-        # geom data
-        self.pixel_spacing = pixel_spacing
+    @property
+    def source(self) -> SourceInfo:
+        return self.meta.source
 
-        # metadata
-        self.metadata = metadata
-        self.header = header
-        self.oct_header = oct_header
+    @property
+    def patient(self) -> PatientInfo:
+        return self.meta.patient
+
+    @property
+    def series(self) -> SeriesInfo:
+        return self.meta.series
+
+    @property
+    def device(self) -> DeviceInfo:
+        return self.meta.device
+
+    @property
+    def geometry(self) -> ImageGeometry:
+        return self.meta.geometry
+
+    @property
+    def patient_id(self) -> str | None:
+        return self.patient.patient_id
+
+    @patient_id.setter
+    def patient_id(self, value: str | None) -> None:
+        self.patient.patient_id = value
+
+    @property
+    def patient_name(self) -> str | None:
+        return self.patient.patient_name
+
+    @patient_name.setter
+    def patient_name(self, value: str | None) -> None:
+        self.patient.patient_name = value
+
+    @property
+    def first_name(self) -> str | None:
+        return self.patient.first_name
+
+    @first_name.setter
+    def first_name(self, value: str | None) -> None:
+        self.patient.first_name = value
+
+    @property
+    def surname(self) -> str | None:
+        return self.patient.surname
+
+    @surname.setter
+    def surname(self, value: str | None) -> None:
+        self.patient.surname = value
+
+    @property
+    def sex(self) -> str | None:
+        return self.patient.sex
+
+    @sex.setter
+    def sex(self, value: str | None) -> None:
+        self.patient.sex = value
+
+    @property
+    def patient_dob(self) -> Any | None:
+        return self.patient.patient_dob
+
+    @patient_dob.setter
+    def patient_dob(self, value: Any | None) -> None:
+        self.patient.patient_dob = value
+
+    @property
+    def DOB(self) -> Any | None:
+        return self.patient.patient_dob
+
+    @DOB.setter
+    def DOB(self, value: Any | None) -> None:
+        self.patient.patient_dob = value
+
+    @property
+    def volume_id(self) -> str | None:
+        return self.series.volume_id
+
+    @volume_id.setter
+    def volume_id(self, value: str | None) -> None:
+        self.series.volume_id = value
+
+    @property
+    def acquisition_date(self) -> datetime | Any | None:
+        return self.series.acquisition_date
+
+    @acquisition_date.setter
+    def acquisition_date(self, value: datetime | Any | None) -> None:
+        self.series.acquisition_date = value
+
+    @property
+    def laterality(self) -> str | None:
+        return self.series.laterality
+
+    @laterality.setter
+    def laterality(self, value: str | None) -> None:
+        self.series.laterality = value
+
+    @property
+    def scan_pattern(self) -> str | None:
+        return self.series.scan_pattern
+
+    @scan_pattern.setter
+    def scan_pattern(self, value: str | None) -> None:
+        self.series.scan_pattern = value
+
+    @property
+    def contours(self) -> dict | None:
+        return self.meta.contours
+
+    @contours.setter
+    def contours(self, value: dict | None) -> None:
+        self.meta.contours = value
+
+    @property
+    def pixel_spacing(self) -> list[float] | tuple[float, ...] | None:
+        return self.geometry.pixel_spacing
+
+    @pixel_spacing.setter
+    def pixel_spacing(self, value: list[float] | tuple[float, ...] | None) -> None:
+        self.geometry.pixel_spacing = value
+
+    @property
+    def device_name(self) -> str | None:
+        return self.device.device_name
+
+    @device_name.setter
+    def device_name(self, value: str | None) -> None:
+        self.device.device_name = value
+
+    @property
+    def metadata(self) -> dict | None:
+        return self.meta.metadata
+
+    @metadata.setter
+    def metadata(self, value: dict | None) -> None:
+        self.meta.metadata = value
+
+    @property
+    def header(self) -> dict | None:
+        return self.meta.header
+
+    @header.setter
+    def header(self, value: dict | None) -> None:
+        self.meta.header = value
+
+    @property
+    def oct_header(self) -> dict | None:
+        return self.meta.oct_header
+
+    @oct_header.setter
+    def oct_header(self, value: dict | None) -> None:
+        self.meta.oct_header = value
 
     def peek(
         self,

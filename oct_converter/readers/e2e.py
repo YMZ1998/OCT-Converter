@@ -10,7 +10,17 @@ from pathlib import Path
 import numpy as np
 from construct.core import StreamError
 
-from oct_converter.image_types import FundusImageWithMetaData, OCTVolumeWithMetaData
+from oct_converter.image_types import (
+    DeviceInfo,
+    FundusImageWithMetaData,
+    FundusMetadataModel,
+    ImageGeometry,
+    OCTMetadataModel,
+    OCTVolumeWithMetaData,
+    PatientInfo,
+    SeriesInfo,
+    SourceInfo,
+)
 from oct_converter.readers.binary_structs import e2e_binary
 
 
@@ -342,19 +352,33 @@ class E2E(object):
                     continue
                 oct_volume = OCTVolumeWithMetaData(
                     volume=volume,
-                    patient_id=self.patient_id,
-                    first_name=self.first_name,
-                    surname=self.surname,
-                    sex=self.sex,
-                    patient_dob=self.birthdate,
-                    acquisition_date=self.acquisition_date,
-                    volume_id=key,
-                    laterality=laterality_dict.get(key),
-                    contours=contour_data.get(key),
-                    pixel_spacing=self.pixel_spacing,
-                    metadata=metadata,
-                    device_name=_extract_metadata_device_name(metadata),
-                    scan_pattern=_extract_metadata_scan_pattern(metadata, key),
+                    metadata_model=OCTMetadataModel(
+                        source=SourceInfo(
+                            vendor="Heidelberg",
+                            file_format="E2E",
+                            filepath=self.filepath,
+                        ),
+                        patient=PatientInfo(
+                            patient_id=self.patient_id,
+                            first_name=self.first_name,
+                            surname=self.surname,
+                            sex=self.sex,
+                            patient_dob=self.birthdate,
+                        ),
+                        series=SeriesInfo(
+                            acquisition_date=self.acquisition_date,
+                            volume_id=key,
+                            laterality=laterality_dict.get(key),
+                            scan_pattern=_extract_metadata_scan_pattern(metadata, key),
+                        ),
+                        device=DeviceInfo(
+                            vendor="Heidelberg",
+                            device_name=_extract_metadata_device_name(metadata),
+                        ),
+                        geometry=ImageGeometry(pixel_spacing=self.pixel_spacing),
+                        metadata=metadata,
+                        contours=contour_data.get(key),
+                    ),
                 )
                 oct_volumes.append(oct_volume)
         # 根据id排序
@@ -467,16 +491,34 @@ class E2E(object):
             for key, image in image_array_dict.items():
                 fundus_image = FundusImageWithMetaData(
                     image=image,
-                    patient_id=self.patient_id,
-                    image_id=key,
-                    laterality=laterality_dict[key]
-                    if key in laterality_dict.keys()
-                    else None,
-                    acquisition_date=self.acquisition_date,
-                    metadata=metadata,
-                    pixel_spacing=[scalex, scalex],
-                    device_name=_extract_metadata_device_name(metadata),
-                    scan_pattern=_extract_metadata_scan_pattern(metadata, key),
+                    metadata_model=FundusMetadataModel(
+                        source=SourceInfo(
+                            vendor="Heidelberg",
+                            file_format="E2E",
+                            filepath=self.filepath,
+                        ),
+                        patient=PatientInfo(
+                            patient_id=self.patient_id,
+                            first_name=self.first_name,
+                            surname=self.surname,
+                            sex=self.sex,
+                            patient_dob=self.birthdate,
+                        ),
+                        series=SeriesInfo(
+                            image_id=key,
+                            laterality=laterality_dict[key]
+                            if key in laterality_dict.keys()
+                            else None,
+                            acquisition_date=self.acquisition_date,
+                            scan_pattern=_extract_metadata_scan_pattern(metadata, key),
+                        ),
+                        device=DeviceInfo(
+                            vendor="Heidelberg",
+                            device_name=_extract_metadata_device_name(metadata),
+                        ),
+                        geometry=ImageGeometry(pixel_spacing=[scalex, scalex]),
+                        metadata=metadata,
+                    ),
                 )
                 fundus_images.append(fundus_image)
 

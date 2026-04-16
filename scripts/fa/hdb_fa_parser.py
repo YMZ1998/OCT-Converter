@@ -1015,9 +1015,9 @@ def frame_time_text(frame: HeidelbergFAFrame) -> str:
 
 if __name__ == "__main__":
     # filepath = r"E:\Data\OCT2\海德堡\KH902-R10-007-007003DME-V1-FFA\KH902-R10-007-007003DME-V1-FFA-OD.E2E"
-    # filepath = r"E:\Data\OCT2\海德堡\KH902-R10-007-007003DME-V1-FFA\KH902-R10-007-007003DME-V1-FFA-OS.E2E"
-    filepath = r"E:\Data\OCT\海德堡\海德堡FA.E2E"
+    filepath = r"E:\Data\OCT2\海德堡\KH902-R10-007-007003DME-V1-FFA\KH902-R10-007-007003DME-V1-FFA-OS.E2E"
+    # filepath = r"E:\Data\OCT\海德堡\海德堡FA.E2E"
 
     input_file, study_info, frames = load_heidelberg_fa_dataset(filepath)
     dump_study_info(study_info)
-    # dump_frames(frames)
+    dump_frames(frames)

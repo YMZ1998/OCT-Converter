@@ -6,7 +6,15 @@ from pathlib import Path
 
 import numpy as np
 
-from oct_converter.image_types import OCTVolumeWithMetaData
+from oct_converter.image_types import (
+    DeviceInfo,
+    ImageGeometry,
+    OCTMetadataModel,
+    OCTVolumeWithMetaData,
+    PatientInfo,
+    SeriesInfo,
+    SourceInfo,
+)
 
 
 class IMG(object):
@@ -54,10 +62,21 @@ class IMG(object):
 
         oct_volume = OCTVolumeWithMetaData(
             [volume[:, :, i] for i in range(volume.shape[2])],
-            patient_id=meta.get("patient_id"),
-            acquisition_date=meta.get("acquisition_date"),
-            laterality=lat_map[meta.get("laterality", None)],
-            metadata=meta,
+            metadata_model=OCTMetadataModel(
+                source=SourceInfo(
+                    vendor="Zeiss",
+                    file_format="IMG",
+                    filepath=self.filepath,
+                ),
+                patient=PatientInfo(patient_id=meta.get("patient_id")),
+                series=SeriesInfo(
+                    acquisition_date=meta.get("acquisition_date"),
+                    laterality=lat_map[meta.get("laterality", None)],
+                ),
+                device=DeviceInfo(vendor="Zeiss"),
+                geometry=ImageGeometry(),
+                metadata=meta,
+            ),
         )
         return oct_volume
 

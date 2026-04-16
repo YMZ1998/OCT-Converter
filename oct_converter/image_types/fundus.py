@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
 
+from oct_converter.image_types.metadata_types import (
+    DeviceInfo,
+    FundusMetadataModel,
+    ImageGeometry,
+    PatientInfo,
+    SeriesInfo,
+    SourceInfo,
+)
 from oct_converter.image_types.write_image import cv2_imwrite_safe
 
 VIDEO_TYPES = [
@@ -47,20 +56,142 @@ class FundusImageWithMetaData(object):
         sex: str | None = None,
         device_name: str | None = None,
         scan_pattern: str | None = None,
+        metadata_model: FundusMetadataModel | None = None,
     ) -> None:
         self.image = image
-        self.laterality = laterality
-        self.patient_id = patient_id
-        self.patient_name = patient_name
-        self.image_id = image_id
-        self.DOB = patient_dob
-        self.patient_dob = patient_dob
-        self.sex = sex
-        self.device_name = device_name
-        self.scan_pattern = scan_pattern
-        self.acquisition_date = acquisition_date
-        self.metadata = metadata
-        self.pixel_spacing = pixel_spacing
+        self.meta = metadata_model or FundusMetadataModel(
+            patient=PatientInfo(
+                patient_id=patient_id,
+                patient_name=patient_name,
+                sex=sex,
+                patient_dob=patient_dob,
+            ),
+            series=SeriesInfo(
+                image_id=image_id,
+                acquisition_date=acquisition_date,
+                laterality=laterality,
+                scan_pattern=scan_pattern,
+            ),
+            device=DeviceInfo(device_name=device_name),
+            geometry=ImageGeometry(pixel_spacing=pixel_spacing),
+            metadata=metadata,
+        )
+
+    @property
+    def source(self) -> SourceInfo:
+        return self.meta.source
+
+    @property
+    def patient(self) -> PatientInfo:
+        return self.meta.patient
+
+    @property
+    def series(self) -> SeriesInfo:
+        return self.meta.series
+
+    @property
+    def device(self) -> DeviceInfo:
+        return self.meta.device
+
+    @property
+    def geometry(self) -> ImageGeometry:
+        return self.meta.geometry
+
+    @property
+    def laterality(self) -> str | None:
+        return self.series.laterality
+
+    @laterality.setter
+    def laterality(self, value: str | None) -> None:
+        self.series.laterality = value
+
+    @property
+    def patient_id(self) -> str | None:
+        return self.patient.patient_id
+
+    @patient_id.setter
+    def patient_id(self, value: str | None) -> None:
+        self.patient.patient_id = value
+
+    @property
+    def patient_name(self) -> str | None:
+        return self.patient.patient_name
+
+    @patient_name.setter
+    def patient_name(self, value: str | None) -> None:
+        self.patient.patient_name = value
+
+    @property
+    def image_id(self) -> str | None:
+        return self.series.image_id
+
+    @image_id.setter
+    def image_id(self, value: str | None) -> None:
+        self.series.image_id = value
+
+    @property
+    def patient_dob(self) -> Any | None:
+        return self.patient.patient_dob
+
+    @patient_dob.setter
+    def patient_dob(self, value: Any | None) -> None:
+        self.patient.patient_dob = value
+
+    @property
+    def DOB(self) -> Any | None:
+        return self.patient.patient_dob
+
+    @DOB.setter
+    def DOB(self, value: Any | None) -> None:
+        self.patient.patient_dob = value
+
+    @property
+    def acquisition_date(self) -> Any | None:
+        return self.series.acquisition_date
+
+    @acquisition_date.setter
+    def acquisition_date(self, value: Any | None) -> None:
+        self.series.acquisition_date = value
+
+    @property
+    def metadata(self) -> dict | None:
+        return self.meta.metadata
+
+    @metadata.setter
+    def metadata(self, value: dict | None) -> None:
+        self.meta.metadata = value
+
+    @property
+    def pixel_spacing(self) -> list[float] | tuple[float, ...] | None:
+        return self.geometry.pixel_spacing
+
+    @pixel_spacing.setter
+    def pixel_spacing(self, value: list[float] | tuple[float, ...] | None) -> None:
+        self.geometry.pixel_spacing = value
+
+    @property
+    def sex(self) -> str | None:
+        return self.patient.sex
+
+    @sex.setter
+    def sex(self, value: str | None) -> None:
+        self.patient.sex = value
+
+    @property
+    def device_name(self) -> str | None:
+        return self.device.device_name
+
+    @device_name.setter
+    def device_name(self, value: str | None) -> None:
+        self.device.device_name = value
+
+    @property
+    def scan_pattern(self) -> str | None:
+        return self.series.scan_pattern
+
+    @scan_pattern.setter
+    def scan_pattern(self, value: str | None) -> None:
+        self.series.scan_pattern = value
 
     def save(self, filepath: str | Path) -> None:
         """Saves fundus image.

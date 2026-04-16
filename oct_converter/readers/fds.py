@@ -7,7 +7,17 @@ from pathlib import Path
 import numpy as np
 from construct import ListContainer
 
-from oct_converter.image_types import FundusImageWithMetaData, OCTVolumeWithMetaData
+from oct_converter.image_types import (
+    DeviceInfo,
+    FundusImageWithMetaData,
+    FundusMetadataModel,
+    ImageGeometry,
+    OCTMetadataModel,
+    OCTVolumeWithMetaData,
+    PatientInfo,
+    SeriesInfo,
+    SourceInfo,
+)
 from oct_converter.readers.binary_structs import fds_binary
 
 
@@ -107,17 +117,29 @@ class FDS(object):
 
         oct_volume = OCTVolumeWithMetaData(
             [volume[:, :, i] for i in range(volume.shape[2])],
-            patient_id=patient_info.get("patient_id"),
-            first_name=patient_info.get("first_name"),
-            surname=patient_info.get("last_name"),
-            sex=sex_map[patient_info.get("sex", None)],
-            patient_dob=patient_dob,
-            acquisition_date=datetime(*capture_info.get("cap_date")),
-            laterality=lat_map[capture_info.get("eye", None)],
-            pixel_spacing=pixel_spacing,
-            metadata=metadata,
-            header=self.header,
-            oct_header=dict(oct_header),
+            metadata_model=OCTMetadataModel(
+                source=SourceInfo(
+                    vendor="Topcon",
+                    file_format="FDS",
+                    filepath=self.filepath,
+                ),
+                patient=PatientInfo(
+                    patient_id=patient_info.get("patient_id"),
+                    first_name=patient_info.get("first_name"),
+                    surname=patient_info.get("last_name"),
+                    sex=sex_map[patient_info.get("sex", None)],
+                    patient_dob=patient_dob,
+                ),
+                series=SeriesInfo(
+                    acquisition_date=datetime(*capture_info.get("cap_date")),
+                    laterality=lat_map[capture_info.get("eye", None)],
+                ),
+                device=DeviceInfo(vendor="Topcon"),
+                geometry=ImageGeometry(pixel_spacing=pixel_spacing),
+                metadata=metadata,
+                header=self.header,
+                oct_header=dict(oct_header),
+            ),
         )
         return oct_volume
 
@@ -145,7 +167,17 @@ class FDS(object):
             image = image.astype(np.float32)
             # store with RGB channel order
             image = np.flip(image, 2)
-        fundus_image = FundusImageWithMetaData(image)
+        fundus_image = FundusImageWithMetaData(
+            image,
+            metadata_model=FundusMetadataModel(
+                source=SourceInfo(
+                    vendor="Topcon",
+                    file_format="FDS",
+                    filepath=self.filepath,
+                ),
+                device=DeviceInfo(vendor="Topcon"),
+            ),
+        )
         return fundus_image
 
     def read_scan_params(self, oct_header: dict) -> list:

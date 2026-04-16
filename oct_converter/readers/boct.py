@@ -12,7 +12,15 @@ from construct import StringError, Struct
 from numpy.typing import NDArray
 
 from oct_converter.exceptions import InvalidOCTReaderError
-from oct_converter.image_types import OCTVolumeWithMetaData
+from oct_converter.image_types import (
+    DeviceInfo,
+    ImageGeometry,
+    OCTMetadataModel,
+    OCTVolumeWithMetaData,
+    PatientInfo,
+    SeriesInfo,
+    SourceInfo,
+)
 from oct_converter.readers.binary_structs import boct_binary
 
 
@@ -127,8 +135,20 @@ class BOCT(object):
         return [
             OCTVolumeWithMetaData(
                 self.vol[t, :, :, :],
-                acquisition_date=self.acquisition_datetime,
-                laterality=self.laterality,
+                metadata_model=OCTMetadataModel(
+                    source=SourceInfo(
+                        vendor="Bioptigen",
+                        file_format="OCT",
+                        filepath=self.filepath,
+                    ),
+                    patient=PatientInfo(patient_id=self.patient_id),
+                    series=SeriesInfo(
+                        acquisition_date=self.acquisition_datetime,
+                        laterality=self.laterality,
+                    ),
+                    device=DeviceInfo(vendor="Bioptigen"),
+                    geometry=ImageGeometry(),
+                ),
             )
             for t in range(self.vol.shape[0])
         ]

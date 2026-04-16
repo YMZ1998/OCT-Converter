@@ -13,6 +13,8 @@ import pydicom
 from oct_converter.image_types import FundusImageWithMetaData, OCTVolumeWithMetaData
 from scripts.oct.parse_tupai_location import get_pixel_spacing, load_tupai_data
 
+from .dataset_types import ScanSegment, TupaiOCTDataset, VendorOverlayData
+
 _TUPAI_OCT_FILENAME = "OCT.dcm"
 _TUPAI_FUNDUS_FILENAME = "Fundus.dcm"
 
@@ -153,10 +155,10 @@ def _parse_acquisition_datetime(dataset: Any) -> datetime | None:
 
 def _sanitize_segments(
     coordinates: np.ndarray,
-) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+) -> list[ScanSegment]:
     """Converts raw coordinate arrays into line segments."""
 
-    segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    segments: list[ScanSegment] = []
     for row in np.asarray(coordinates, dtype=float):
         if row.shape[0] < 4 or not np.isfinite(row[:4]).all():
             continue
@@ -225,8 +227,18 @@ def _extract_scan_pattern(primary: Any, fallback: Any) -> str:
     )
 
 
-def load_tupai_oct_dataset(path: str | Path) -> dict[str, Any]:
-    """Loads a Tupai dataset into viewer-friendly OCT and fundus objects."""
+def _compute_bounds(
+    segments: list[ScanSegment],
+) -> tuple[float, float, float, float] | None:
+    if not segments:
+        return None
+    xs = [point[0] for segment in segments for point in segment]
+    ys = [point[1] for segment in segments for point in segment]
+    return min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)
+
+
+def load_tupai_oct_dataset(path: str | Path) -> TupaiOCTDataset:
+    """Loads a Tupai dataset into a typed dataset object."""
 
     dataset_dir = resolve_tupai_input_dir(path)
     if dataset_dir is None:
@@ -352,16 +364,37 @@ def load_tupai_oct_dataset(path: str | Path) -> dict[str, Any]:
         scan_pattern=scan_pattern,
     )
 
-    return {
-        "dataset_dir": str(dataset_dir),
-        "volume": oct_volume,
-        "fundus": fundus_image,
-        "segments": _sanitize_segments(full_coordinates),
-        "segment_coordinates": _sanitize_segments(segment_coordinates),
-        "coordinate_mode": coordinate_mode,
-        "segment_mode": segment_mode,
-        "scan_band_width_pixels": float(scan_band_width_pixels),
-    }
+    full_segments = _sanitize_segments(full_coordinates)
+    band_segments = _sanitize_segments(segment_coordinates)
+    scan_segments = full_segments or band_segments
+    warning = ""
+    if not scan_segments:
+        warning = "Tupai frame location metadata unavailable; overlay falls back to fundus only."
+
+    return TupaiOCTDataset(
+        dataset_dir=str(dataset_dir),
+        volume=oct_volume,
+        fundus=fundus_image,
+        segments=full_segments,
+        segment_coordinates=band_segments,
+        coordinate_mode=coordinate_mode,
+        segment_mode=segment_mode,
+        scan_band_width_pixels=float(scan_band_width_pixels),
+        overlay_entries=[
+            VendorOverlayData(
+                matched_fundus_index=0,
+                matched_fundus_label=getattr(fundus_image, "image_id", None)
+                or "Tupai fundus",
+                fundus_match_mode="tupai-directory",
+                overlay_mode="tupai-metadata",
+                projection_mode=str(coordinate_mode or "tupai"),
+                localizer_mode=str(segment_mode or "ophthalmic-frame-location-sequence"),
+                warning=warning,
+                scan_segments=scan_segments,
+                bounds=_compute_bounds(scan_segments),
+            )
+        ],
+    )
 
 
 __all__ = ["load_tupai_oct_dataset", "resolve_tupai_input_dir"]

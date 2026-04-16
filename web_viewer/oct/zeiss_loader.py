@@ -17,6 +17,8 @@ import pydicom
 from oct_converter.image_types import FundusImageWithMetaData, OCTVolumeWithMetaData
 from scripts.old.zeiss_dicom import ZEISSDicom
 
+from .dataset_types import VendorOverlayData, ZeissOCTDataset
+
 pydicom.config.settings.reading_validation_mode = pydicom.config.IGNORE
 pydicom.config.settings.writing_validation_mode = pydicom.config.IGNORE
 
@@ -897,7 +899,7 @@ def _append_fundus_candidate(
     return candidate
 
 
-def load_zeiss_oct_dataset(path: str | Path) -> dict[str, Any]:
+def load_zeiss_oct_dataset(path: str | Path) -> ZeissOCTDataset:
     pydicom.config.settings.reading_validation_mode = pydicom.config.IGNORE
     pydicom.config.settings.writing_validation_mode = pydicom.config.IGNORE
 
@@ -909,7 +911,7 @@ def load_zeiss_oct_dataset(path: str | Path) -> dict[str, Any]:
 
     all_volumes: list[OCTVolumeWithMetaData] = []
     all_fundus_images: list[FundusImageWithMetaData] = []
-    overlays: list[dict[str, Any]] = []
+    overlays: list[VendorOverlayData] = []
 
     for exam_dir in exam_dirs:
         raw_analysis = load_exam_raw_analysis(exam_dir)
@@ -1316,29 +1318,29 @@ def load_zeiss_oct_dataset(path: str | Path) -> dict[str, Any]:
             current_volume.device_name = item["device_name"]
             current_volume.scan_pattern = item["scan_pattern"]
             overlays.append(
-                {
-                    "matched_fundus_index": matched_fundus_index,
-                    "matched_fundus_label": matched_fundus_label,
-                    "fundus_match_mode": "zeiss-dicom",
-                    "overlay_mode": overlay_mode,
-                    "projection_mode": projection_mode,
-                    "localizer_mode": localizer_mode,
-                    "warning": warning,
-                    "scan_segments": segments,
-                    "bounds": bounds,
-                }
+                VendorOverlayData(
+                    matched_fundus_index=matched_fundus_index,
+                    matched_fundus_label=matched_fundus_label,
+                    fundus_match_mode="zeiss-dicom",
+                    overlay_mode=overlay_mode,
+                    projection_mode=projection_mode,
+                    localizer_mode=localizer_mode,
+                    warning=warning,
+                    scan_segments=segments,
+                    bounds=bounds,
+                )
             )
 
     if not all_volumes:
         raise ValueError("No Zeiss B-scan volumes were extracted from the selected input.")
 
-    return {
-        "input_path": str(clean_path_like_input(path)),
-        "exam_dirs": [str(exam_dir) for exam_dir in exam_dirs],
-        "volumes": all_volumes,
-        "fundus_images": all_fundus_images,
-        "overlays": overlays,
-    }
+    return ZeissOCTDataset(
+        input_path=str(clean_path_like_input(path)),
+        exam_dirs=[str(exam_dir) for exam_dir in exam_dirs],
+        volume_entries=all_volumes,
+        fundus_entries=all_fundus_images,
+        overlay_entries=overlays,
+    )
 
 
 __all__ = [

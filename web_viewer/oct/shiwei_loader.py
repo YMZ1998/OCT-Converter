@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from scripts.oct.parse_shiwei_location import (
     load_shiwei_oct_dataset as _load_shiwei_oct_dataset_from_script,
     resolve_input_files as _resolve_input_files,
 )
+
+from .dataset_types import ScanSegment, ShiweiOCTDataset, VendorOverlayData
 
 
 def _is_shiwei_dataset_dir(directory: Path) -> bool:
@@ -59,8 +60,18 @@ def resolve_shiwei_input_dir(path: str | Path) -> Path | None:
     return None
 
 
-def load_shiwei_oct_dataset(path: str | Path) -> dict[str, Any]:
-    """Loads a Shiwei dataset and annotates the resolved input directory."""
+def _compute_bounds(
+    segments: list[ScanSegment],
+) -> tuple[float, float, float, float] | None:
+    if not segments:
+        return None
+    xs = [point[0] for segment in segments for point in segment]
+    ys = [point[1] for segment in segments for point in segment]
+    return min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)
+
+
+def load_shiwei_oct_dataset(path: str | Path) -> ShiweiOCTDataset:
+    """Loads a Shiwei dataset and converts it into a typed dataset object."""
 
     dataset_dir = resolve_shiwei_input_dir(path)
     if dataset_dir is None:
@@ -70,8 +81,38 @@ def load_shiwei_oct_dataset(path: str | Path) -> dict[str, Any]:
         )
 
     dataset = _load_shiwei_oct_dataset_from_script(str(dataset_dir))
-    dataset["input_dir"] = str(dataset_dir)
-    return dataset
+    segments = list(dataset.get("segments") or [])
+    warning = ""
+    if not segments:
+        warning = "Shiwei frame location metadata unavailable; overlay falls back to fundus only."
+
+    return ShiweiOCTDataset(
+        input_dir=str(dataset_dir),
+        volume=dataset["volume"],
+        fundus=dataset["fundus"],
+        coordinates=list(dataset.get("coordinates") or []),
+        angles=[float(angle) for angle in (dataset.get("angles") or [])],
+        segments=segments,
+        segmentation_surfaces=dataset.get("segmentation_surfaces"),
+        segmentation_orientation=dataset.get("segmentation_orientation"),
+        bscan_file=dataset.get("bscan_file"),
+        fundus_file=dataset.get("fundus_file"),
+        seg_file=dataset.get("seg_file"),
+        overlay_entries=[
+            VendorOverlayData(
+                matched_fundus_index=0,
+                matched_fundus_label=getattr(dataset["fundus"], "image_id", None)
+                or "Shiwei fundus",
+                fundus_match_mode="shiwei-directory",
+                overlay_mode="shiwei-metadata",
+                projection_mode="shiwei-metadata",
+                localizer_mode="ophthalmic-frame-location-sequence",
+                warning=warning,
+                scan_segments=segments,
+                bounds=_compute_bounds(segments),
+            )
+        ],
+    )
 
 
 __all__ = ["load_shiwei_oct_dataset", "resolve_shiwei_input_dir"]

@@ -6,7 +6,14 @@ from pathlib import Path
 
 import numpy as np
 
-from oct_converter.image_types import OCTVolumeWithMetaData
+from oct_converter.image_types import (
+    DeviceInfo,
+    ImageGeometry,
+    OCTMetadataModel,
+    OCTVolumeWithMetaData,
+    SeriesInfo,
+    SourceInfo,
+)
 
 
 class POCT(object):
@@ -119,12 +126,27 @@ class POCT(object):
                 all_volumes.append(
                     OCTVolumeWithMetaData(
                         all_slices,
-                        acquisition_date=self.file_info.get("acquisition_date", None),
-                        laterality=self.file_info.get("laterality", ""),
-                        pixel_spacing=[
-                            self.file_info.get("scale_x", 0.015),
-                            self.file_info.get("scale_y", 0.015),
-                        ],
+                        metadata_model=OCTMetadataModel(
+                            source=SourceInfo(
+                                vendor="Optovue",
+                                file_format="POCT",
+                                filepath=self.filepath,
+                            ),
+                            series=SeriesInfo(
+                                acquisition_date=self.file_info.get(
+                                    "acquisition_date", None
+                                ),
+                                laterality=self.file_info.get("laterality", ""),
+                            ),
+                            device=DeviceInfo(vendor="Optovue"),
+                            geometry=ImageGeometry(
+                                pixel_spacing=[
+                                    self.file_info.get("scale_x", 0.015),
+                                    self.file_info.get("scale_y", 0.015),
+                                ]
+                            ),
+                            metadata=self.file_info,
+                        ),
                     )
                 )
         return all_volumes
