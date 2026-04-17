@@ -1,10 +1,6 @@
 ﻿from __future__ import annotations
 
-import argparse
-import json
 import re
-import sys
-import unicodedata
 import warnings
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -14,11 +10,16 @@ from typing import Any
 import cv2
 import numpy as np
 import pydicom
+import unicodedata
 from pydicom.pixel_data_handlers import convert_color_space
 
-
 DICOM_SUFFIXES = {".dcm", ".dicom"}
-OPHTHALMIC_PHOTOGRAPHY_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.77.1.5.1"
+VL_PHOTOGRAPHIC_IMAGE_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.77.1.4"
+OPHTHALMIC_PHOTOGRAPHY_8BIT_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.77.1.5.1"
+FA_IMAGE_SOP_CLASS_UIDS = {
+    VL_PHOTOGRAPHIC_IMAGE_SOP_CLASS_UID,
+    OPHTHALMIC_PHOTOGRAPHY_8BIT_SOP_CLASS_UID,
+}
 FA_KEYWORDS = {
     "fa",
     "ffa",
@@ -375,8 +376,10 @@ def build_time_info_from_value(
         date_value=date_value,
         time_value=time_value,
         iso_datetime=datetime_to_iso(datetime_value),
-        iso_date=date_to_iso(date_value if date_value is not None else (datetime_value.date() if datetime_value else None)),
-        iso_time=time_to_iso(time_value if time_value is not None else (datetime_value.timetz().replace(tzinfo=None) if datetime_value else None)),
+        iso_date=date_to_iso(
+            date_value if date_value is not None else (datetime_value.date() if datetime_value else None)),
+        iso_time=time_to_iso(time_value if time_value is not None else (
+            datetime_value.timetz().replace(tzinfo=None) if datetime_value else None)),
     )
 
 
@@ -692,19 +695,23 @@ def discover_candidate_files(input_path: Path) -> list[Path]:
     return sorted(candidate for candidate in search_root.rglob("*") if candidate.is_file())
 
 
-def classify_dicom(ds: pydicom.dataset.FileDataset) -> str:
+def classify_dicom(
+    ds: pydicom.dataset.FileDataset,
+    *,
+    header_only: bool = False,
+) -> str:
     number_of_frames = parse_int(getattr(ds, "NumberOfFrames", None))
     rows = parse_int(getattr(ds, "Rows", None))
     columns = parse_int(getattr(ds, "Columns", None))
+
+    if not header_only and "PixelData" not in ds:
+        return "non_image_dicom"
 
     if number_of_frames is not None and number_of_frames > 1:
         return "multi_frame_image"
 
     if rows is not None and columns is not None:
         return "single_frame_image"
-
-    if "PixelData" not in ds:
-        return "non_image_dicom"
 
     return "unknown_image"
 
@@ -733,7 +740,7 @@ def score_fa_series(ds: pydicom.dataset.FileDataset) -> int:
         score += 3
     if any(keyword in tokens for keyword in FA_KEYWORDS):
         score += 1
-    if clean_text(getattr(ds, "SOPClassUID", "")) == OPHTHALMIC_PHOTOGRAPHY_SOP_CLASS_UID:
+    if clean_text(getattr(ds, "SOPClassUID", "")) in FA_IMAGE_SOP_CLASS_UIDS:
         score += 2
     if (parse_int(getattr(ds, "NumberOfFrames", None)) or 1) > 1:
         score += 1
@@ -866,7 +873,7 @@ def load_zeiss_fa_series(input_path: str | Path, *, prefer_fa_only: bool = True)
         except Exception:
             continue
 
-        classification = classify_dicom(header_ds)
+        classification = classify_dicom(header_ds, header_only=True)
         if classification == "non_image_dicom":
             continue
 
@@ -902,7 +909,8 @@ def load_zeiss_fa_series(input_path: str | Path, *, prefer_fa_only: bool = True)
                 "study_description": clean_text(getattr(header_ds, "StudyDescription", "")),
                 "protocol_name": clean_text(getattr(header_ds, "ProtocolName", "")),
                 "modality": clean_text(getattr(header_ds, "Modality", "")),
-                "laterality": clean_text(getattr(header_ds, "Laterality", "")) or clean_text(getattr(header_ds, "ImageLaterality", "")),
+                "laterality": clean_text(getattr(header_ds, "Laterality", "")) or clean_text(
+                    getattr(header_ds, "ImageLaterality", "")),
                 "sop_class_uid": clean_text(getattr(header_ds, "SOPClassUID", "")),
                 "photometric_interpretation": clean_text(getattr(header_ds, "PhotometricInterpretation", "")),
                 "rows": parse_int(getattr(header_ds, "Rows", None)),
@@ -912,20 +920,20 @@ def load_zeiss_fa_series(input_path: str | Path, *, prefer_fa_only: bool = True)
                     f"{study_time_info.raw_date} {study_time_info.raw_time}".strip()
                 ),
                 "study_datetime_iso": study_time_info.iso_datetime
-                or (
-                    f"{study_time_info.iso_date}T{study_time_info.iso_time}"
-                    if study_time_info.iso_date and study_time_info.iso_time
-                    else study_time_info.iso_date
-                ),
+                                      or (
+                                          f"{study_time_info.iso_date}T{study_time_info.iso_time}"
+                                          if study_time_info.iso_date and study_time_info.iso_time
+                                          else study_time_info.iso_date
+                                      ),
                 "series_datetime_raw": series_time_info.raw_datetime or (
                     f"{series_time_info.raw_date} {series_time_info.raw_time}".strip()
                 ),
                 "series_datetime_iso": series_time_info.iso_datetime
-                or (
-                    f"{series_time_info.iso_date}T{series_time_info.iso_time}"
-                    if series_time_info.iso_date and series_time_info.iso_time
-                    else series_time_info.iso_date
-                ),
+                                       or (
+                                           f"{series_time_info.iso_date}T{series_time_info.iso_time}"
+                                           if series_time_info.iso_date and series_time_info.iso_time
+                                           else series_time_info.iso_date
+                                       ),
                 "files_with_headers": [],
             },
         )
@@ -951,6 +959,8 @@ def load_zeiss_fa_series(input_path: str | Path, *, prefer_fa_only: bool = True)
 
         for file_path, header_ds in sorted_items:
             ds = safe_dcmread(file_path, stop_before_pixels=False)
+            if classify_dicom(ds, header_only=False) == "non_image_dicom":
+                continue
             pixel_array = decode_pixel_array(ds)
             split_images = split_frames(pixel_array, ds)
             study_time_info = extract_time_info(
@@ -1047,7 +1057,7 @@ def load_zeiss_fa_series(input_path: str | Path, *, prefer_fa_only: bool = True)
     series_records.sort(
         key=lambda series: (
             -series.fa_score,
-            series.series_number if series.series_number is not None else 10**9,
+            series.series_number if series.series_number is not None else 10 ** 9,
             series.series_description.lower(),
             series.series_uid,
         )
@@ -1219,9 +1229,8 @@ __all__ = [
     "summarize_series_timing",
 ]
 
-
 if __name__ == "__main__":
-    example_path = DEFAULT_INPUT_PATH
+    example_path = Path(r"E:\Data\OCT\蔡司FA\2")
     print(f"Testing Zeiss FA parser with: {example_path}")
     if not example_path.exists():
         print("Example path not found.")
@@ -1238,5 +1247,3 @@ if __name__ == "__main__":
                 print(f"[Series {index}]")
                 dump_series_detail(series)
                 dump_frames(series)
-
-

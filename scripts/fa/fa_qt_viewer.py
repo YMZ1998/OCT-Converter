@@ -50,17 +50,19 @@ from hdb_fa_parser import (
     laterality_to_chinese as hdb_laterality_display_text,
     load_heidelberg_fa_dataset,
 )
-from zeiss_fa_qt import (
+from zeiss_fa_parser import (
     DEFAULT_INPUT_PATH as ZEISS_DEFAULT_INPUT_PATH,
     DICOM_SUFFIXES,
+    discover_candidate_files,
+    safe_dcmread,
+)
+from zeiss_fa_qt import (
     build_fa_viewer_tracks,
     clean_text,
-    discover_candidate_files,
     laterality_display_text,
     load_zeiss_fa_series,
     normalize_to_uint8,
     parse_iso_datetime,
-    safe_dcmread,
     viewer_frame_sort_key,
 )
 
@@ -117,7 +119,7 @@ class UnifiedFAFrame:
     def elapsed_display(self) -> str:
         if self.elapsed_seconds is None:
             return "-"
-        return f"{self.elapsed_seconds:.3f} s"
+        return format_elapsed_clock(self.elapsed_seconds)
 
     @property
     def size_display(self) -> str:
@@ -188,6 +190,17 @@ def summarize_values(values: list[str], *, fallback: str = "-", max_items: int =
     return f"{' / '.join(cleaned[:max_items])} / +{len(cleaned) - max_items} more"
 
 
+def format_elapsed_clock(seconds: float | None) -> str:
+    if seconds is None:
+        return "-"
+
+    total_centiseconds = max(0, int(round(float(seconds) * 100)))
+    total_seconds, centiseconds = divmod(total_centiseconds, 100)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{centiseconds:02d}"
+
+
 def format_time_range(frames: list[UnifiedFAFrame]) -> str:
     datetimes = [frame.acquisition_datetime for frame in frames if frame.acquisition_datetime is not None]
     if datetimes:
@@ -197,7 +210,7 @@ def format_time_range(frames: list[UnifiedFAFrame]) -> str:
 
     elapsed_seconds = [frame.elapsed_seconds for frame in frames if frame.elapsed_seconds is not None]
     if elapsed_seconds:
-        return f"+{min(elapsed_seconds):.3f} s ~ +{max(elapsed_seconds):.3f} s"
+        return f"{format_elapsed_clock(min(elapsed_seconds))} ~ {format_elapsed_clock(max(elapsed_seconds))}"
     return "-"
 
 

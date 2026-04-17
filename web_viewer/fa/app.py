@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import webbrowser
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from .server import build_handler
+import uvicorn
+
+from .server import create_app
 from .state import FAViewerState
 
 
@@ -17,11 +17,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vendor", default="auto", help="Startup vendor mode: auto/topcon/zeiss/hdb/cfp.")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind.")
     parser.add_argument("--port", type=int, default=8766, help="Port to bind.")
-    parser.add_argument(
-        "--no-browser",
-        default=True,
-        help="Do not auto-open the browser.",
-    )
     return parser.parse_args()
 
 
@@ -33,15 +28,16 @@ def main() -> None:
     if args.path:
         state.load(args.path, vendor_mode=args.vendor)
 
-    server = ThreadingHTTPServer((args.host, args.port), build_handler(state, html_path))
     url = f"http://{args.host}:{args.port}"
     print(f"FA web viewer running at {url}")
-    if not args.no_browser:
-        webbrowser.open(url)
     try:
-        server.serve_forever()
+        uvicorn.run(
+            create_app(state, html_path),
+            host=args.host,
+            port=args.port,
+            log_level="warning",
+        )
     except KeyboardInterrupt:
         pass
     finally:
-        server.server_close()
         state.close()

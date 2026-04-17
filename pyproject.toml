@@ -19,10 +19,13 @@ classifiers = [
 keywords = ["oct", "fundus", "reader", "fda", "e2e", "zeiss", "heidelberg", "topcon"]
 dependencies = [
     "construct",
+    "fastapi",
+    "uvicorn",
     "imageio",
     "natsort",
     "numpy",
     "opencv-python",
+    "python-multipart",
     "pydicom>3",
     "matplotlib",
     "imageio-ffmpeg",

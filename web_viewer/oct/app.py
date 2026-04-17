@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import webbrowser
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from .server import build_handler
+import uvicorn
+
+from .server import create_app
 from .state import ViewerState
 
 
@@ -24,11 +24,6 @@ def parse_args() -> argparse.Namespace:
         "--img-interlaced",
         action="store_true",
         help="Apply de-interlacing for Zeiss .img files.",
-    )
-    parser.add_argument(
-        "--no-browser",
-        default=True,
-        help="Do not auto-open the browser.",
     )
     return parser.parse_args()
 
@@ -47,15 +42,16 @@ def main() -> None:
     if args.path:
         state.load(args.path)
 
-    server = ThreadingHTTPServer((args.host, args.port), build_handler(state, html_path))
     url = f"http://{args.host}:{args.port}"
     print(f"OCT web viewer running at {url}")
-    if not args.no_browser:
-        webbrowser.open(url)
     try:
-        server.serve_forever()
+        uvicorn.run(
+            create_app(state, html_path),
+            host=args.host,
+            port=args.port,
+            log_level="warning",
+        )
     except KeyboardInterrupt:
         pass
     finally:
-        server.server_close()
         state.close()

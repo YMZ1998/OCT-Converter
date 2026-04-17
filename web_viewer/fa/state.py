@@ -29,6 +29,7 @@ from fa_qt_viewer import (  # type: ignore[import-not-found]
     VENDOR_ZEISS,
     build_frame_metadata_text,
     build_summary_text,
+    format_elapsed_clock,
     load_unified_dataset,
 )
 
@@ -129,7 +130,7 @@ def format_time_range(frames: list[UnifiedFAFrame]) -> str:
 
     elapsed_seconds = [frame.elapsed_seconds for frame in frames if frame.elapsed_seconds is not None]
     if elapsed_seconds:
-        return f"+{min(elapsed_seconds):.3f} s ~ +{max(elapsed_seconds):.3f} s"
+        return f"{format_elapsed_clock(min(elapsed_seconds))} ~ {format_elapsed_clock(max(elapsed_seconds))}"
     return "-"
 
 

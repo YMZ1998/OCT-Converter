@@ -206,6 +206,9 @@
       border: none;
       border-radius: 0;
       overflow: hidden;
+      cursor: default;
+      position: relative;
+      touch-action: none;
     }
 
     #frameImage {
@@ -213,6 +216,34 @@
       max-height: 100%;
       object-fit: contain;
       display: block;
+      transform-origin: center center;
+      transition: transform 0.12s ease;
+      user-select: none;
+      -webkit-user-drag: none;
+      will-change: transform;
+    }
+
+    .image-wrap.is-draggable {
+      cursor: grab;
+    }
+
+    .image-wrap.is-dragging {
+      cursor: grabbing;
+    }
+
+    .image-wrap.is-dragging #frameImage {
+      transition: none;
+    }
+
+    .zoom-controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .zoom-controls button {
+      flex: 1 1 0;
+      min-width: 0;
     }
 
     .frames-panel {
@@ -513,6 +544,14 @@
           <input id="contrastSlider" type="range" min="50" max="200" value="100">
           <div class="muted">Brightness</div>
           <input id="brightnessSlider" type="range" min="-80" max="80" value="0">
+          <div class="muted">Zoom</div>
+          <div class="zoom-controls">
+            <button id="zoomOutButton" type="button">-</button>
+            <button id="zoomResetButton" type="button">100%</button>
+            <button id="zoomInButton" type="button">+</button>
+          </div>
+          <div class="muted">Hint</div>
+          <div class="muted">滚轮缩放，拖拽平移，双击复位</div>
         </div>
       </section>
 
@@ -609,6 +648,10 @@
       currentImageUrl: '',
       preloadedImageUrls: new Set(),
       rerenderTimerId: null,
+      imageZoom: 1,
+      imagePanX: 0,
+      imagePanY: 0,
+      imageDrag: null,
     };
 
     const els = {
@@ -629,7 +672,11 @@
       fpsInput: document.getElementById('fpsInput'),
       contrastSlider: document.getElementById('contrastSlider'),
       brightnessSlider: document.getElementById('brightnessSlider'),
+      zoomOutButton: document.getElementById('zoomOutButton'),
+      zoomResetButton: document.getElementById('zoomResetButton'),
+      zoomInButton: document.getElementById('zoomInButton'),
       frameImage: document.getElementById('frameImage'),
+      imageWrap: document.querySelector('.image-wrap'),
       imageInfoBar: document.getElementById('imageInfoBar'),
       imagePanel: document.querySelector('.image-panel'),
       framesPanel: document.querySelector('.frames-panel'),
@@ -667,6 +714,10 @@
 
     function currentVendorMode() {
       return els.vendorSelect.value || 'auto';
+    }
+
+    function clampValue(value, min, max) {
+      return Math.min(max, Math.max(min, value));
     }
 
     function loadRecentPaths() {
@@ -1058,6 +1109,169 @@
       preloadFrameAt(centerIndex - 1);
     }
 
+    function clampImageZoom(value) {
+      return clampValue(Number(value) || 1, 1, 6);
+    }
+
+    function getImageBaseMetrics() {
+      const wrapWidth = els.imageWrap?.clientWidth || 0;
+      const wrapHeight = els.imageWrap?.clientHeight || 0;
+      const naturalWidth = els.frameImage?.naturalWidth || 0;
+      const naturalHeight = els.frameImage?.naturalHeight || 0;
+      if (!wrapWidth || !wrapHeight || !naturalWidth || !naturalHeight) {
+        return null;
+      }
+
+      const containScale = Math.min(1, wrapWidth / naturalWidth, wrapHeight / naturalHeight);
+      return {
+        wrapWidth,
+        wrapHeight,
+        baseWidth: Math.max(1, naturalWidth * containScale),
+        baseHeight: Math.max(1, naturalHeight * containScale),
+      };
+    }
+
+    function clampImagePan(panX = state.imagePanX, panY = state.imagePanY, zoom = state.imageZoom) {
+      const metrics = getImageBaseMetrics();
+      if (!metrics || zoom <= 1) {
+        return { x: 0, y: 0 };
+      }
+
+      const maxPanX = Math.max(0, (metrics.baseWidth * zoom - metrics.wrapWidth) / 2);
+      const maxPanY = Math.max(0, (metrics.baseHeight * zoom - metrics.wrapHeight) / 2);
+      return {
+        x: clampValue(panX, -maxPanX, maxPanX),
+        y: clampValue(panY, -maxPanY, maxPanY),
+      };
+    }
+
+    function updateImageTransform() {
+      const pan = clampImagePan();
+      state.imagePanX = pan.x;
+      state.imagePanY = pan.y;
+      els.frameImage.style.transform = `translate(${pan.x}px, ${pan.y}px) scale(${state.imageZoom})`;
+      els.imageWrap.classList.toggle('is-draggable', state.imageZoom > 1);
+      els.imageWrap.classList.toggle('is-dragging', Boolean(state.imageDrag));
+      els.zoomResetButton.textContent = `${Math.round(state.imageZoom * 100)}%`;
+      const zoomDisabled = !state.visibleFrames.length;
+      els.zoomOutButton.disabled = zoomDisabled;
+      els.zoomResetButton.disabled = zoomDisabled;
+      els.zoomInButton.disabled = zoomDisabled;
+    }
+
+    function resetImageView() {
+      state.imageZoom = 1;
+      state.imagePanX = 0;
+      state.imagePanY = 0;
+      state.imageDrag = null;
+      updateImageTransform();
+    }
+
+    function setImageZoom(value, { anchorClientX = null, anchorClientY = null } = {}) {
+      const nextZoom = clampImageZoom(value);
+      const previousZoom = state.imageZoom;
+      const metrics = getImageBaseMetrics();
+
+      if (!metrics) {
+        state.imageZoom = nextZoom;
+        updateImageTransform();
+        return;
+      }
+
+      if (
+        anchorClientX !== null
+        && anchorClientY !== null
+        && previousZoom > 0
+      ) {
+        const wrapRect = els.imageWrap.getBoundingClientRect();
+        const localX = anchorClientX - wrapRect.left;
+        const localY = anchorClientY - wrapRect.top;
+        const imageOffsetX = (localX - metrics.wrapWidth / 2 - state.imagePanX) / previousZoom;
+        const imageOffsetY = (localY - metrics.wrapHeight / 2 - state.imagePanY) / previousZoom;
+        state.imagePanX = localX - metrics.wrapWidth / 2 - imageOffsetX * nextZoom;
+        state.imagePanY = localY - metrics.wrapHeight / 2 - imageOffsetY * nextZoom;
+      } else if (nextZoom === 1) {
+        state.imagePanX = 0;
+        state.imagePanY = 0;
+      }
+
+      state.imageZoom = nextZoom;
+      if (nextZoom === 1) {
+        state.imagePanX = 0;
+        state.imagePanY = 0;
+      }
+      updateImageTransform();
+    }
+
+    function stepImageZoom(direction, options = {}) {
+      if (!state.visibleFrames.length) return;
+      const factor = direction > 0 ? 1.2 : (1 / 1.2);
+      setImageZoom(state.imageZoom * factor, options);
+    }
+
+    function beginImagePan(event) {
+      if (event.button !== 0 || state.imageZoom <= 1) return;
+      event.preventDefault();
+      state.imageDrag = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        originPanX: state.imagePanX,
+        originPanY: state.imagePanY,
+      };
+      els.imageWrap.classList.add('is-dragging');
+      els.imageWrap.setPointerCapture?.(event.pointerId);
+    }
+
+    function updateImagePan(event) {
+      if (!state.imageDrag) return;
+      state.imagePanX = state.imageDrag.originPanX + (event.clientX - state.imageDrag.startX);
+      state.imagePanY = state.imageDrag.originPanY + (event.clientY - state.imageDrag.startY);
+      updateImageTransform();
+    }
+
+    function endImagePan(event) {
+      if (!state.imageDrag) return;
+      if (event && state.imageDrag.pointerId !== undefined && event.pointerId !== state.imageDrag.pointerId) {
+        return;
+      }
+      state.imageDrag = null;
+      els.imageWrap.classList.remove('is-dragging');
+      updateImageTransform();
+    }
+
+    function setupImageViewportInteractions() {
+      if (!els.imageWrap) return;
+
+      els.imageWrap.addEventListener('wheel', (event) => {
+        if (!state.visibleFrames.length) return;
+        event.preventDefault();
+        stepImageZoom(event.deltaY < 0 ? 1 : -1, {
+          anchorClientX: event.clientX,
+          anchorClientY: event.clientY,
+        });
+      }, { passive: false });
+
+      els.imageWrap.addEventListener('dblclick', () => {
+        if (!state.visibleFrames.length) return;
+        resetImageView();
+      });
+      els.imageWrap.addEventListener('pointerdown', beginImagePan);
+      els.imageWrap.addEventListener('pointermove', updateImagePan);
+      els.imageWrap.addEventListener('pointerup', endImagePan);
+      els.imageWrap.addEventListener('pointercancel', endImagePan);
+      window.addEventListener('pointerup', endImagePan);
+
+      if (typeof ResizeObserver !== 'undefined') {
+        const observer = new ResizeObserver(() => {
+          updateImageTransform();
+        });
+        observer.observe(els.imageWrap);
+      } else {
+        window.addEventListener('resize', updateImageTransform);
+      }
+    }
+
     function scheduleCurrentFrameRerender() {
       if (state.currentVisibleIndex < 0) return;
       if (state.rerenderTimerId !== null) {
@@ -1157,6 +1371,7 @@
       els.deviceInfo.textContent = '-';
       els.imageInfoBar.textContent = 'FA | - | Frame -/- | -';
       els.frameImage.removeAttribute('src');
+      resetImageView();
       els.frameTableBody.innerHTML = '';
       clearTimeline();
       resetFrameSelectors();
@@ -1252,6 +1467,7 @@
         stopPlayback();
         els.frameTableBody.innerHTML = '';
         els.frameImage.removeAttribute('src');
+        resetImageView();
         state.imageLoading = false;
         state.currentImageUrl = '';
         state.preloadedImageUrls.clear();
@@ -1341,6 +1557,7 @@
 
     function onFrameImageSettled() {
       state.imageLoading = false;
+      updateImageTransform();
       if (!state.playing || !state.playbackAdvancePending) return;
       state.playbackAdvancePending = false;
       window.requestAnimationFrame(() => {
@@ -1390,6 +1607,7 @@
       try {
         setupPanelPersistence();
         setupViewerSplitter();
+        setupImageViewportInteractions();
         const payload = await apiJson('/api/state');
         renderVendorOptions(payload);
         renderRecentPaths(payload);
@@ -1436,6 +1654,9 @@
 
     els.contrastSlider.addEventListener('input', scheduleCurrentFrameRerender);
     els.brightnessSlider.addEventListener('input', scheduleCurrentFrameRerender);
+    els.zoomOutButton.addEventListener('click', () => stepImageZoom(-1));
+    els.zoomResetButton.addEventListener('click', resetImageView);
+    els.zoomInButton.addEventListener('click', () => stepImageZoom(1));
     els.frameImage.decoding = 'async';
     els.frameImage.addEventListener('load', onFrameImageSettled);
     els.frameImage.addEventListener('error', onFrameImageSettled);
@@ -1455,9 +1676,18 @@
       } else if (event.key === 'ArrowRight') {
         event.preventDefault();
         gotoFrame(state.currentVisibleIndex + 1);
+      } else if (event.key === '+' || event.key === '=') {
+        event.preventDefault();
+        stepImageZoom(1);
+      } else if (event.key === '-') {
+        event.preventDefault();
+        stepImageZoom(-1);
       } else if (event.code === 'Space') {
         event.preventDefault();
         togglePlayback();
+      } else if (event.key === '0') {
+        event.preventDefault();
+        resetImageView();
       }
     });
 
