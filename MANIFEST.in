@@ -1,1 +1,4 @@
 include examples/*.py
+include examples/*.html
+recursive-include web_viewer *.html
+recursive-include web_viewer *.md

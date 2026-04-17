@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OCT Web Service Client Example</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel-2: #1f2937;
+      --border: #334155;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #020617 0%, var(--bg) 100%);
+      color: var(--text);
+      font: 14px/1.5 "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    }
+
+    .page {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .panel {
+      background: rgba(17, 24, 39, 0.92);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+    }
+
+    p {
+      margin: 0 0 12px;
+      color: var(--muted);
+    }
+
+    .toolbar {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    input, button {
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      padding: 10px 12px;
+      font: inherit;
+    }
+
+    input {
+      flex: 1;
+      min-width: 280px;
+      background: var(--panel);
+      color: var(--text);
+    }
+
+    button {
+      background: var(--accent);
+      color: #082f49;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #020617;
+      border: 1px solid #1e293b;
+      border-radius: 12px;
+      padding: 12px;
+      overflow: auto;
+      min-height: 140px;
+    }
+
+    img {
+      display: block;
+      max-width: 100%;
+      border-radius: 12px;
+      border: 1px solid #1e293b;
+      background: #020617;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="panel">
+      <h1>OCT Web Service Client Example</h1>
+      <p>这个示例演示普通网页如何调用统一服务的 `/api/oct/*` 接口。</p>
+      <div class="toolbar">
+        <input id="baseUrl" value="http://127.0.0.1:8765" placeholder="Service base URL">
+        <input id="octPath" placeholder="输入本地 OCT 文件路径，例如 D:/data/sample.e2e">
+        <button id="loadBtn" type="button">加载 OCT</button>
+        <button id="refreshBtn" type="button">读取状态</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <strong>当前状态</strong>
+      <pre id="stateBox">尚未请求</pre>
+    </div>
+
+    <div class="panel">
+      <strong>首张切片</strong>
+      <p>只有在已经成功加载 OCT 数据后，下面图片才会显示出来。</p>
+      <img id="sliceImage" alt="OCT slice preview">
+    </div>
+  </div>
+
+  <script>
+    const elements = {
+      baseUrl: document.getElementById("baseUrl"),
+      octPath: document.getElementById("octPath"),
+      loadBtn: document.getElementById("loadBtn"),
+      refreshBtn: document.getElementById("refreshBtn"),
+      stateBox: document.getElementById("stateBox"),
+      sliceImage: document.getElementById("sliceImage"),
+    };
+
+    function getBaseUrl() {
+      return elements.baseUrl.value.trim().replace(/\/+$/, "");
+    }
+
+    async function readJson(url) {
+      const response = await fetch(url, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || JSON.stringify(data));
+      }
+      return data;
+    }
+
+    async function refreshState() {
+      const state = await readJson(`${getBaseUrl()}/api/oct/state`);
+      elements.stateBox.textContent = JSON.stringify(state, null, 2);
+
+      if (state.loaded && Array.isArray(state.volumes) && state.volumes.length > 0) {
+        elements.sliceImage.src = `${getBaseUrl()}/api/oct/volume/0/slice/0.png?ts=${Date.now()}`;
+      } else {
+        elements.sliceImage.removeAttribute("src");
+      }
+    }
+
+    async function loadOct() {
+      const path = elements.octPath.value.trim();
+      if (!path) {
+        alert("请输入 OCT 文件路径");
+        return;
+      }
+      await readJson(`${getBaseUrl()}/api/oct/load?path=${encodeURIComponent(path)}&vendor=auto`);
+      await refreshState();
+    }
+
+    elements.loadBtn.addEventListener("click", () => {
+      loadOct().catch((error) => {
+        elements.stateBox.textContent = error.message;
+      });
+    });
+
+    elements.refreshBtn.addEventListener("click", () => {
+      refreshState().catch((error) => {
+        elements.stateBox.textContent = error.message;
+      });
+    });
+  </script>
+</body>
+</html>

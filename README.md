@@ -91,6 +91,24 @@ It starts a local web page with a Zeiss-style layout and supports:
 
 Detailed viewer documentation, startup parameters, and HTTP API descriptions are available at `web_viewer/README.md`.
 
+### Unified web service for other frontends
+
+If you want to expose the viewer capabilities as a backend service for other web pages or frontend apps,
+the repo now also includes a unified FastAPI service:
+
+```bash
+python web_viewer/web_service.py --host 127.0.0.1 --port 8765
+```
+
+This service exposes:
+
+- `/api/oct/*` for OCT loading, state, slices, projections, contours, and fundus images
+- `/api/fa/*` for FA loading, state, and frame images
+- `/docs` for OpenAPI docs
+- `/healthz` for health checks
+
+Detailed service notes and integration examples are available at `web_viewer/SERVICE_API.md`.
+
 ### Viewer layout
 
 The viewer-related files are now split by modality to keep the repo easier to navigate:
