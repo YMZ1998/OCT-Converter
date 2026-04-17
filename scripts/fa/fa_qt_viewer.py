@@ -219,31 +219,22 @@ def summarize_groups(frames: list[UnifiedFAFrame]) -> str:
     return ", ".join(f"{group} {count}" for group, count in counts.items()) or "-"
 
 
-def rebase_elapsed_seconds_by_group(frames: list[UnifiedFAFrame]) -> None:
-    first_datetime_by_group: dict[str, datetime] = {}
-    first_elapsed_by_group: dict[str, float] = {}
+def rebase_elapsed_seconds(frames: list[UnifiedFAFrame]) -> None:
+    first_datetime = min(
+        (frame.acquisition_datetime for frame in frames if frame.acquisition_datetime is not None),
+        default=None,
+    )
+    first_elapsed = min(
+        (frame.elapsed_seconds for frame in frames if frame.elapsed_seconds is not None),
+        default=None,
+    )
 
     for frame in frames:
-        group_key = frame.group_key or frame.group_label or "ALL"
-        if frame.acquisition_datetime is not None:
-            previous_datetime = first_datetime_by_group.get(group_key)
-            if previous_datetime is None or frame.acquisition_datetime < previous_datetime:
-                first_datetime_by_group[group_key] = frame.acquisition_datetime
-        if frame.elapsed_seconds is not None:
-            previous_elapsed = first_elapsed_by_group.get(group_key)
-            if previous_elapsed is None or frame.elapsed_seconds < previous_elapsed:
-                first_elapsed_by_group[group_key] = frame.elapsed_seconds
-
-    for frame in frames:
-        group_key = frame.group_key or frame.group_label or "ALL"
         elapsed_seconds: float | None = None
-        first_datetime = first_datetime_by_group.get(group_key)
         if frame.acquisition_datetime is not None and first_datetime is not None:
             elapsed_seconds = (frame.acquisition_datetime - first_datetime).total_seconds()
-        elif frame.elapsed_seconds is not None:
-            first_elapsed = first_elapsed_by_group.get(group_key)
-            if first_elapsed is not None:
-                elapsed_seconds = frame.elapsed_seconds - first_elapsed
+        elif frame.elapsed_seconds is not None and first_elapsed is not None:
+            elapsed_seconds = frame.elapsed_seconds - first_elapsed
 
         frame.elapsed_seconds = None if elapsed_seconds is None else max(0.0, elapsed_seconds)
 
@@ -496,7 +487,7 @@ def load_topcon_dataset(input_path: Path) -> UnifiedFADataset:
         device_model=study_info.device_model or "Topcon FA",
     )
 
-    rebase_elapsed_seconds_by_group(unified_frames)
+    rebase_elapsed_seconds(unified_frames)
 
     return UnifiedFADataset(
         vendor=VENDOR_TOPCON,
@@ -601,7 +592,7 @@ def load_hdb_dataset(input_path: Path) -> UnifiedFADataset:
     elif first_datetime is not None:
         exam_date = first_datetime.strftime("%Y-%m-%d")
 
-    rebase_elapsed_seconds_by_group(unified_frames)
+    rebase_elapsed_seconds(unified_frames)
 
     normalized_study = UnifiedFAStudyInfo(
         vendor=VENDOR_HDB,
@@ -730,7 +721,7 @@ def load_zeiss_dataset(input_path: Path) -> UnifiedFADataset:
     elif first_series.series_datetime_iso:
         exam_date = first_series.series_datetime_iso.split("T")[0]
 
-    rebase_elapsed_seconds_by_group(unified_frames)
+    rebase_elapsed_seconds(unified_frames)
 
     normalized_study = UnifiedFAStudyInfo(
         vendor=VENDOR_ZEISS,
@@ -857,7 +848,7 @@ def load_cfp_dataset(input_path: Path) -> UnifiedFADataset:
         fallback="Unknown",
     )
 
-    rebase_elapsed_seconds_by_group(unified_frames)
+    rebase_elapsed_seconds(unified_frames)
 
     normalized_study = UnifiedFAStudyInfo(
         vendor=VENDOR_CFP,
