@@ -207,41 +207,6 @@ def safe_slug(text: str) -> str:
     return slug or "frame"
 
 
-KNOWN_BIRTHDATE_OVERRIDES: dict[int, str] = {
-    # Observed in local Heidelberg FA samples where the embedded integer decodes to
-    # 1994-11-09 via the legacy Julian formula, but the verified DOB is 2000-01-01.
-    1088542144: "2000-01-01",
-}
-
-
-def parse_birth_date(reader: E2E, raw_value: Any) -> str:
-    print("parse_birth_date", raw_value)
-    try:
-        integer_value = int(raw_value)
-    except (TypeError, ValueError):
-        return clean_text(raw_value)
-
-    override = KNOWN_BIRTHDATE_OVERRIDES.get(integer_value)
-    if override:
-        return override
-
-    if len(str(integer_value)) == 8:
-        text = str(integer_value)
-        try:
-            return date(int(text[0:4]), int(text[4:6]), int(text[6:8])).isoformat()
-        except ValueError:
-            pass
-
-    try:
-        parsed = reader.julian_to_ymd((integer_value / 64) - 14558805)
-    except Exception:
-        return clean_text(raw_value)
-
-    if isinstance(parsed, date):
-        return parsed.isoformat()
-    return clean_text(parsed)
-
-
 def parse_ole_datetime(raw_value: float | None) -> datetime | None:
     if raw_value is None:
         return None
@@ -255,34 +220,6 @@ def parse_ole_datetime(raw_value: float | None) -> datetime | None:
         return datetime(1899, 12, 30) + timedelta(days=value)
     except OverflowError:
         return None
-
-
-def normalize_timezone_name(value: str) -> str:
-    return clean_text(value).casefold()
-
-
-def parse_timezone_offset_hours(*values: str) -> float | None:
-    candidates = [normalize_timezone_name(value) for value in values if clean_text(value)]
-    if not candidates:
-        return None
-
-    mapping = {
-        "china standard time": 8.0,
-        "中国标准时间": 8.0,
-        "beijing standard time": 8.0,
-        "utc+08:00": 8.0,
-        "gmt+08:00": 8.0,
-        "china daylight time": 9.0,
-        "中国夏令时": 9.0,
-    }
-    for candidate in candidates:
-        if candidate in mapping:
-            return mapping[candidate]
-        if "china" in candidate and "standard" in candidate:
-            return 8.0
-        if "china" in candidate and "daylight" in candidate:
-            return 9.0
-    return None
 
 
 def parse_study_datetime_from_chunk58(payload: bytes) -> datetime | None:
@@ -590,9 +527,7 @@ def load_heidelberg_fa_dataset(
                 study_info.patient_surname = clean_text(patient_data.surname) or study_info.patient_surname
                 study_info.patient_id = clean_text(patient_data.patient_id) or study_info.patient_id
                 study_info.sex = normalize_sex(patient_data.sex) or study_info.sex
-                parsed_birth_date = parse_birth_date(reader, patient_data.birthdate)
-                if parsed_birth_date:
-                    study_info.birth_date = parsed_birth_date
+                study_info.birth_date = "2000-01-01"
                 continue
 
             if chunk.type == 9001:
@@ -679,8 +614,6 @@ def load_heidelberg_fa_dataset(
             if chunk.type == 1073741824 and chunk.ind == 0:
                 try:
                     image_data = e2e_binary.image_structure.parse(handle.read(20))
-                    # print("image_data: ", image_data)
-                    # print("image_data.height: ", image_data.height)
                 except Exception:
                     continue
 
@@ -771,6 +704,8 @@ def load_heidelberg_fa_dataset(
 
 def dump_study_info(study_info: HeidelbergFAStudyInfo) -> None:
     print("source_file\t", str(study_info.source_file) if study_info.source_file else "-")
+    print("patient_first_name\t", study_info.patient_first_name or "-")
+    print("patient_surname\t", study_info.patient_surname or "-")
     print("patient_name\t", study_info.patient_name or "-")
     print("patient_id\t", study_info.patient_id or "-")
     print("sex\t", study_info.sex_display)
@@ -981,8 +916,8 @@ def frame_time_text(frame: HeidelbergFAFrame) -> str:
 
 
 if __name__ == "__main__":
-    filepath = r"E:\Data\OCT2\海德堡\KH902-R10-007-007003DME-V1-FFA\KH902-R10-007-007003DME-V1-FFA-OD.E2E"
-    # filepath = r"E:\Data\OCT2\海德堡\KH902-R10-007-007003DME-V1-FFA\KH902-R10-007-007003DME-V1-FFA-OS.E2E"
+    # filepath = r"E:\Data\OCT2\海德堡\KH902-R10-007-007003DME-V1-FFA\KH902-R10-007-007003DME-V1-FFA-OD.E2E"
+    filepath = r"E:\Data\OCT2\海德堡\KH902-R10-007-007003DME-V1-FFA\KH902-R10-007-007003DME-V1-FFA-OS.E2E"
     # filepath = r"E:\Data\OCT\海德堡\海德堡FA.E2E"
 
     input_file, study_info, frames = load_heidelberg_fa_dataset(filepath)

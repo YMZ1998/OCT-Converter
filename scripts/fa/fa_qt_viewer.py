@@ -566,7 +566,7 @@ def load_hdb_dataset(input_path: Path, *, relative_time_mode: str = "default") -
             f"Slice {frame.slice_id}" if frame.slice_id >= 0 else "Slice -",
             frame.acquisition_source or "",
         ]
-
+        # print(frame.time_display)
         unified_frames.append(
             UnifiedFAFrame(
                 order_index=frame.order_index,
