@@ -46,7 +46,6 @@ from topcon_fa_qt import (
     load_topcon_fa_dataset,
 )
 from hdb_fa_parser import (
-    DEFAULT_INPUT_PATH as HDB_DEFAULT_INPUT_PATH,
     laterality_to_chinese as hdb_laterality_display_text,
     load_heidelberg_fa_dataset,
 )
@@ -113,10 +112,13 @@ class UnifiedFAFrame:
     elapsed_seconds: float | None
     width: int | None
     height: int | None
+    elapsed_display_override: str | None = None
     is_proofsheet: bool = False
 
     @property
     def elapsed_display(self) -> str:
+        if self.elapsed_display_override:
+            return self.elapsed_display_override
         if self.elapsed_seconds is None:
             return "-"
         return format_elapsed_clock(self.elapsed_seconds)
@@ -505,7 +507,10 @@ def _compute_hdb_elapsed_seconds(
     first_time_of_day_ms: int | None,
     first_raw_elapsed_ms: int | None,
     first_raw_elapsed_ms_alt: int | None,
+    prefer_relative_time: bool = False,
 ) -> float | None:
+    if prefer_relative_time and frame.relative_time_seconds is not None:
+        return frame.relative_time_seconds
     if frame.acquisition_datetime_local is not None and first_datetime is not None:
         return (frame.acquisition_datetime_local - first_datetime).total_seconds()
     if frame.time_of_day_ms is not None and first_time_of_day_ms is not None:
@@ -517,7 +522,7 @@ def _compute_hdb_elapsed_seconds(
     return None
 
 
-def load_hdb_dataset(input_path: Path) -> UnifiedFADataset:
+def load_hdb_dataset(input_path: Path, *, relative_time_mode: str = "default") -> UnifiedFADataset:
     input_file, study_info, frames = load_heidelberg_fa_dataset(str(input_path))
     if input_file is None or not input_file.exists():
         raise FileNotFoundError(input_path)
@@ -539,6 +544,9 @@ def load_hdb_dataset(input_path: Path) -> UnifiedFADataset:
     first_raw_elapsed_ms_alt = min(
         (frame.raw_elapsed_ms_alt for frame in frames if frame.raw_elapsed_ms_alt is not None),
         default=None,
+    )
+    use_regex_relative_time = relative_time_mode == "parser3" and any(
+        frame.relative_time_seconds is not None for frame in frames
     )
 
     unified_frames: list[UnifiedFAFrame] = []
@@ -580,9 +588,11 @@ def load_hdb_dataset(input_path: Path) -> UnifiedFADataset:
                     first_time_of_day_ms=first_time_of_day_ms,
                     first_raw_elapsed_ms=first_raw_elapsed_ms,
                     first_raw_elapsed_ms_alt=first_raw_elapsed_ms_alt,
+                    prefer_relative_time=use_regex_relative_time,
                 ),
                 width=frame.width,
                 height=frame.height,
+                elapsed_display_override=frame.relative_time_display if use_regex_relative_time else None,
             )
         )
 
@@ -592,7 +602,8 @@ def load_hdb_dataset(input_path: Path) -> UnifiedFADataset:
     elif first_datetime is not None:
         exam_date = first_datetime.strftime("%Y-%m-%d")
 
-    rebase_elapsed_seconds(unified_frames)
+    if not use_regex_relative_time:
+        rebase_elapsed_seconds(unified_frames)
 
     normalized_study = UnifiedFAStudyInfo(
         vendor=VENDOR_HDB,
@@ -872,7 +883,12 @@ def load_cfp_dataset(input_path: Path) -> UnifiedFADataset:
     )
 
 
-def load_unified_dataset(input_path: str | Path, *, vendor: str = VENDOR_AUTO) -> UnifiedFADataset:
+def load_unified_dataset(
+    input_path: str | Path,
+    *,
+    vendor: str = VENDOR_AUTO,
+    hdb_relative_time_parser: str = "default",
+) -> UnifiedFADataset:
     path = Path(input_path).expanduser().resolve()
     if not path.exists():
         raise FileNotFoundError(path)
@@ -882,7 +898,7 @@ def load_unified_dataset(input_path: str | Path, *, vendor: str = VENDOR_AUTO) -
     if vendor == VENDOR_ZEISS:
         return load_zeiss_dataset(path)
     if vendor == VENDOR_HDB:
-        return load_hdb_dataset(path)
+        return load_hdb_dataset(path, relative_time_mode=hdb_relative_time_parser)
     if vendor == VENDOR_CFP:
         return load_cfp_dataset(path)
 
@@ -899,7 +915,7 @@ def load_unified_dataset(input_path: str | Path, *, vendor: str = VENDOR_AUTO) -
             if candidate_vendor == VENDOR_ZEISS:
                 return load_zeiss_dataset(path)
             if candidate_vendor == VENDOR_HDB:
-                return load_hdb_dataset(path)
+                return load_hdb_dataset(path, relative_time_mode=hdb_relative_time_parser)
             if candidate_vendor == VENDOR_CFP:
                 return load_cfp_dataset(path)
         except Exception as exc:

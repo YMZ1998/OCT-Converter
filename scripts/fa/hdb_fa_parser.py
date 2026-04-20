@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import json
 import struct
 import sys
@@ -20,8 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from oct_converter.readers import E2E
 from oct_converter.readers.binary_structs import e2e_binary
-
-DEFAULT_INPUT_PATH = Path(r"E:\Data\OCT\海德堡\海德堡FA.E2E")
+from scripts.fa.hdb_fa_parser_3 import extract_time_angles
 
 
 @dataclass
@@ -34,9 +32,6 @@ class HeidelbergFAStudyInfo:
     birth_date: str = ""
     device_model: str = ""
     device_short_name: str = ""
-    timezone1: str = ""
-    timezone2: str = ""
-    timezone_offset_hours: float | None = None
     study_datetime_local: datetime | None = None
     frame_count: int = 0
     series_count: int = 0
@@ -65,11 +60,6 @@ class HeidelbergFAStudyInfo:
         return self.device_model or self.device_short_name or "-"
 
     @property
-    def timezone_display(self) -> str:
-        parts = [part for part in [self.timezone1, self.timezone2] if part]
-        return " / ".join(parts) if parts else "-"
-
-    @property
     def study_datetime_iso(self) -> str:
         return self.study_datetime_local.isoformat(sep=" ") if self.study_datetime_local else "-"
 
@@ -89,8 +79,6 @@ class HeidelbergFAFrame:
     scan_pattern: str
     examined_structure: str
     laterality: str
-    timezone1: str
-    timezone2: str
     time_of_day_ms: int | None
     raw_elapsed_ms: int | None
     raw_elapsed_ms_alt: int | None
@@ -99,6 +87,8 @@ class HeidelbergFAFrame:
     width: int
     height: int
     image: np.ndarray
+    relative_time_seconds: float | None = None
+    relative_time_display: str | None = None
     metadata_text: str = ""
 
     @property
@@ -127,11 +117,6 @@ class HeidelbergFAFrame:
     @property
     def structure_display(self) -> str:
         parts = [part for part in [self.examined_structure, self.scan_pattern] if part]
-        return " / ".join(parts) if parts else "-"
-
-    @property
-    def timezone_display(self) -> str:
-        parts = [part for part in [self.timezone1, self.timezone2] if part]
         return " / ".join(parts) if parts else "-"
 
     @property
@@ -171,25 +156,7 @@ class Chunk39Timing:
     time_of_day_ms: int | None
     raw_elapsed_ms: int | None
     raw_elapsed_ms_alt: int | None
-    timezone1: str
-    timezone2: str
     source: str
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Heidelberg FA E2E Qt 查看器")
-    parser.add_argument(
-        "input_path",
-        nargs="?",
-        default=str(DEFAULT_INPUT_PATH) if DEFAULT_INPUT_PATH.exists() else None,
-        help="海德堡 .E2E 文件路径，或包含 .E2E 的目录。",
-    )
-    parser.add_argument(
-        "--dump",
-        action="store_true",
-        help="仅解析并打印结果，不启动 Qt。",
-    )
-    return parser.parse_args()
 
 
 def clean_text(value: Any) -> str:
@@ -330,18 +297,13 @@ def parse_study_datetime_from_chunk58(payload: bytes) -> datetime | None:
 
 
 def parse_chunk39_timing(payload: bytes) -> Chunk39Timing:
-    timezone1 = ""
-    timezone2 = ""
-
-    from scripts.old.parse_time_2 import parse_chunk39
-    parsed = parse_chunk39(payload)
+    # from scripts.old.parse_time_2 import parse_chunk39
+    # parsed = parse_chunk39(payload)
     # print(parsed)
 
     # print(payload,",")
     try:
         parsed = e2e_binary.time_data.parse(payload)
-        timezone1 = clean_text(getattr(parsed, "timezone1", ""))
-        timezone2 = clean_text(getattr(parsed, "timezone2", ""))
     except Exception:
         pass
 
@@ -361,10 +323,33 @@ def parse_chunk39_timing(payload: bytes) -> Chunk39Timing:
         time_of_day_ms=time_of_day_ms,
         raw_elapsed_ms=raw_elapsed_ms,
         raw_elapsed_ms_alt=raw_elapsed_ms_alt,
-        timezone1=timezone1,
-        timezone2=timezone2,
         source="chunk39[96:100]+timezone",
     )
+
+
+def apply_regex_relative_times(input_file: Path, frames: list[HeidelbergFAFrame]) -> bool:
+    if not frames:
+        return False
+    new_frames = []
+    for index, frame in enumerate(frames):
+        # print(index, frame.modality)
+        if frame.modality == "FA":
+            new_frames.append(frame)
+        else:
+            frame.relative_time_display = "\\"
+    try:
+        matches = extract_time_angles(input_file.read_bytes())
+        # print(f"{len(matches)}，{len(new_frames)}")
+    except Exception:
+        return False
+    if len(matches) != len(new_frames):
+        return False
+
+    for frame, match in zip(new_frames, matches):
+        frame.relative_time_seconds = match.elapsed_seconds
+        frame.relative_time_display = f"{match.minutes:02d}:{match.seconds:02d}.{match.centiseconds:02d}"
+        # print(frame.relative_time_display)
+    return True
 
 
 def choose_frame_datetime(
@@ -378,11 +363,11 @@ def choose_frame_datetime(
 
     midnight = datetime.combine(study_date_value, datetime.min.time())
     candidate_local = midnight + timedelta(milliseconds=time_of_day_ms)
-    candidates = [(candidate_local, "study_date + chunk39_ms")]
+    candidates = [(candidate_local, "study_date")]
 
     if timezone_offset_hours is not None:
         shifted = candidate_local + timedelta(hours=timezone_offset_hours)
-        candidates.append((shifted, "study_date + chunk39_ms + timezone_offset"))
+        candidates.append((shifted, "study_date"))
 
     if study_datetime_local is not None:
         best_datetime, best_source = min(
@@ -483,15 +468,15 @@ def build_frame_metadata_text(
             "time_of_day_ms": frame.time_of_day_ms,
             "raw_elapsed_ms": frame.raw_elapsed_ms,
             "raw_elapsed_ms_alt": frame.raw_elapsed_ms_alt,
+            "relative_time_seconds": frame.relative_time_seconds,
+            "relative_time_display": frame.relative_time_display,
             "acquisition_datetime_iso": frame.acquisition_datetime_iso,
             "acquisition_date_iso": frame.acquisition_date_iso,
             "acquisition_time_iso": frame.acquisition_time_iso,
             "acquisition_source": frame.acquisition_source,
-            "timezones": [value for value in [frame.timezone1, frame.timezone2] if value],
         },
         "study": {
             "study_datetime_local": study_info.study_datetime_iso,
-            "timezone_offset_hours": study_info.timezone_offset_hours,
         },
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
@@ -507,7 +492,11 @@ def frame_sort_key(frame: HeidelbergFAFrame) -> tuple[int, Any, float, int, int]
     raw_marker = (
         float(frame.time_of_day_ms)
         if frame.time_of_day_ms is not None
-        else float("inf")
+        else (
+            float(frame.relative_time_seconds)
+            if frame.relative_time_seconds is not None
+            else float("inf")
+        )
     )
     return (
         0 if frame.acquisition_datetime_local is not None else 1,
@@ -521,12 +510,7 @@ def frame_sort_key(frame: HeidelbergFAFrame) -> tuple[int, Any, float, int, int]
 def apply_chunk39_timing_to_frame(
     frame: HeidelbergFAFrame,
     timing: Chunk39Timing,
-    *,
-    fallback_timezone1: str = "",
-    fallback_timezone2: str = "",
 ) -> None:
-    frame.timezone1 = timing.timezone1 or frame.timezone1 or fallback_timezone1
-    frame.timezone2 = timing.timezone2 or frame.timezone2 or fallback_timezone2
     frame.time_of_day_ms = timing.time_of_day_ms
     frame.raw_elapsed_ms = timing.raw_elapsed_ms
     frame.raw_elapsed_ms_alt = timing.raw_elapsed_ms_alt
@@ -585,8 +569,6 @@ def load_heidelberg_fa_dataset(
                     "scan_pattern": "",
                     "examined_structure": "",
                     "laterality": "",
-                    "timezone1": "",
-                    "timezone2": "",
                 },
             )
 
@@ -682,24 +664,13 @@ def load_heidelberg_fa_dataset(
             if chunk.type == 39:
                 payload = handle.read(chunk.size)
                 timing = parse_chunk39_timing(payload)
-                timezone1 = timing.timezone1
-                timezone2 = timing.timezone2
-                if timezone1 and not study_info.timezone1:
-                    study_info.timezone1 = timezone1
-                if timezone2 and not study_info.timezone2:
-                    study_info.timezone2 = timezone2
-                if timezone1 and not series_entry["timezone1"]:
-                    series_entry["timezone1"] = timezone1
-                if timezone2 and not series_entry["timezone2"]:
-                    series_entry["timezone2"] = timezone2
+
                 pending_frames = unmatched_frame_indices_by_series_and_slice[series_key][chunk.slice_id]
                 if pending_frames:
                     frame_index = pending_frames.popleft()
                     apply_chunk39_timing_to_frame(
                         frames[frame_index],
                         timing,
-                        fallback_timezone1=series_entry["timezone1"] or study_info.timezone1,
-                        fallback_timezone2=series_entry["timezone2"] or study_info.timezone2,
                     )
                 else:
                     pending_timing_by_series_and_slice[series_key][chunk.slice_id].append(timing)
@@ -742,8 +713,6 @@ def load_heidelberg_fa_dataset(
                     scan_pattern="",
                     examined_structure="",
                     laterality="",
-                    timezone1=series_entry["timezone1"] or study_info.timezone1,
-                    timezone2=series_entry["timezone2"] or study_info.timezone2,
                     time_of_day_ms=None,
                     raw_elapsed_ms=None,
                     raw_elapsed_ms_alt=None,
@@ -752,13 +721,13 @@ def load_heidelberg_fa_dataset(
                     width=int(image_data.width),
                     height=int(image_data.height),
                     image=image,
+                    relative_time_seconds=None,
+                    relative_time_display=None,
                 )
                 if timing is not None:
                     apply_chunk39_timing_to_frame(
                         frame,
                         timing,
-                        fallback_timezone1=series_entry["timezone1"] or study_info.timezone1,
-                        fallback_timezone2=series_entry["timezone2"] or study_info.timezone2,
                     )
                 frames.append(frame)
                 if timing is None:
@@ -766,7 +735,6 @@ def load_heidelberg_fa_dataset(
 
     if study_date_value is None and study_info.study_datetime_local is not None:
         study_date_value = study_info.study_datetime_local.date()
-    study_info.timezone_offset_hours = parse_timezone_offset_hours(study_info.timezone1, study_info.timezone2)
 
     for frame in frames:
         meta = series_metadata.get(frame.series_key, {})
@@ -775,18 +743,16 @@ def load_heidelberg_fa_dataset(
         frame.scan_pattern = clean_text(meta.get("scan_pattern", ""))
         frame.examined_structure = clean_text(meta.get("examined_structure", ""))
         frame.laterality = clean_text(meta.get("laterality", "")).upper()
-        frame.timezone1 = frame.timezone1 or clean_text(meta.get("timezone1", "")) or study_info.timezone1
-        frame.timezone2 = frame.timezone2 or clean_text(meta.get("timezone2", "")) or study_info.timezone2
         frame.acquisition_datetime_local, inferred_source = choose_frame_datetime(
             study_datetime_local=study_info.study_datetime_local,
             study_date_value=study_date_value,
-            time_of_day_ms=frame.time_of_day_ms,
-            timezone_offset_hours=study_info.timezone_offset_hours,
+            time_of_day_ms=frame.time_of_day_ms, timezone_offset_hours=8,
         )
         if inferred_source:
             frame.acquisition_source = inferred_source
-
     frames.sort(key=frame_sort_key)
+    apply_regex_relative_times(input_file, frames)
+
     series_display_counts: Counter[str] = Counter()
     for index, frame in enumerate(frames):
         frame.order_index = index
@@ -810,7 +776,6 @@ def dump_study_info(study_info: HeidelbergFAStudyInfo) -> None:
     print("sex\t", study_info.sex_display)
     print("birth_date\t", study_info.birth_date or "-")
     print("device\t", study_info.device_display)
-    print("timezone\t", study_info.timezone_display)
     print("study_datetime\t", study_info.study_datetime_iso)
     print("series_count\t", study_info.series_count)
     print("frame_count\t", study_info.frame_count)
@@ -833,7 +798,8 @@ def _pad_display_text(text: object, width: int) -> str:
 
 
 def dump_frames(frames: list[HeidelbergFAFrame]) -> None:
-    headers = ["index", "series", "modality", "eye", "series_index", "slice", "size", "acquisition"]
+    headers = ["index", "series", "modality", "eye", "series_index", "slice", "size", "acquisition",
+               "relative_time_display"]
     rows = [
         [
             str(frame.order_index + 1),
@@ -844,6 +810,7 @@ def dump_frames(frames: list[HeidelbergFAFrame]) -> None:
             str(frame.slice_id),
             frame.size_display,
             frame.time_display,
+            frame.relative_time_display,
         ]
         for frame in frames
     ]
@@ -1014,8 +981,8 @@ def frame_time_text(frame: HeidelbergFAFrame) -> str:
 
 
 if __name__ == "__main__":
-    # filepath = r"E:\Data\OCT2\海德堡\KH902-R10-007-007003DME-V1-FFA\KH902-R10-007-007003DME-V1-FFA-OD.E2E"
-    filepath = r"E:\Data\OCT2\海德堡\KH902-R10-007-007003DME-V1-FFA\KH902-R10-007-007003DME-V1-FFA-OS.E2E"
+    filepath = r"E:\Data\OCT2\海德堡\KH902-R10-007-007003DME-V1-FFA\KH902-R10-007-007003DME-V1-FFA-OD.E2E"
+    # filepath = r"E:\Data\OCT2\海德堡\KH902-R10-007-007003DME-V1-FFA\KH902-R10-007-007003DME-V1-FFA-OS.E2E"
     # filepath = r"E:\Data\OCT\海德堡\海德堡FA.E2E"
 
     input_file, study_info, frames = load_heidelberg_fa_dataset(filepath)

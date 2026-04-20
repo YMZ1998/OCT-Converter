@@ -91,8 +91,8 @@ def parse_foctarc_strings(strings):
     return records
 
 if __name__ == "__main__":
-    xml_path = r"E:\Data\OCT\拓普康OCT\studyDriveLink\19700101_080000.xml"
-    # xml_path = r"E:\Data\OCT\拓普康OCT\studyDriveLink\20251231_102549.xml"
+    # xml_path = r"E:\Data\OCT\拓普康OCT\studyDriveLink\19700101_080000.xml"
+    xml_path = r"E:\Data\OCT\拓普康OCT\studyDriveLink\20251231_102549.xml"
     oct_infos = parse_oct_xml(xml_path)
     print(oct_infos)
 

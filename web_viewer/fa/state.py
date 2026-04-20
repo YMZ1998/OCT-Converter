@@ -187,7 +187,7 @@ class FAViewerState:
 
     def load(self, filepath: str, vendor_mode: str = VENDOR_AUTO) -> dict[str, Any]:
         path = Path(filepath).expanduser().resolve()
-        dataset = load_unified_dataset(path, vendor=vendor_mode)
+        dataset = load_unified_dataset(path, vendor=vendor_mode, hdb_relative_time_parser="parser3")
         with self.lock:
             self.loaded_state = FALoadedState(
                 source_path=str(path),

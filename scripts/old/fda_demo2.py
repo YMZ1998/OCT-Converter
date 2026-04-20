@@ -604,7 +604,12 @@ def run(filepath):
         oct_header=volume.oct_header,
     )
 
-
+#扫描直径6mm 从xml中获取
+# - `ScanWidth`：每条B-scan的A-scan数量（横向像素）
+# - `ScanCount`：B-scan数量（定位线数量）
+# - `ScanHeight`：每条A-scan的深度采样点数
+# - `RealScanX`：扫描区域宽度(mm)
+# - `RealScanY`：扫描区域高度(mm)或线间隔(mm)
 if __name__ == "__main__":
     filepath = r"E:\Data\OCT\拓普康OCT\41365.fda"
     run(filepath)
