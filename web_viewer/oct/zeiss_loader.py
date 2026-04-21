@@ -10,7 +10,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 import pydicom
 
@@ -236,13 +235,6 @@ def to_display_image(image: np.ndarray) -> np.ndarray:
     if array.ndim == 3 and array.shape[2] >= 3:
         return array[:, :, :3]
     raise ValueError(f"Unsupported image shape: {array.shape}")
-
-
-def to_gray_image(image: np.ndarray) -> np.ndarray:
-    array = to_display_image(image)
-    if array.ndim == 2:
-        return array
-    return cv2.cvtColor(array, cv2.COLOR_RGB2GRAY)
 
 
 def to_gray_volume(volume_array: np.ndarray) -> np.ndarray:
@@ -582,91 +574,6 @@ def build_overlay_outline(
     x1 = x0 + width
     y1 = y0 + height
     return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
-
-
-def warp_points(points: list[tuple[float, float]], matrix: np.ndarray | None) -> list[tuple[float, float]]:
-    if not points:
-        return []
-    if matrix is None:
-        return [(float(x_pos), float(y_pos)) for x_pos, y_pos in points]
-    point_array = np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)
-    if matrix.shape == (2, 3):
-        warped = cv2.transform(point_array, matrix)
-    elif matrix.shape == (3, 3):
-        warped = cv2.perspectiveTransform(point_array, matrix)
-    else:
-        raise ValueError(f"Unsupported transform shape: {matrix.shape}")
-    return [tuple(map(float, point)) for point in warped.reshape(-1, 2)]
-
-
-def warp_segments(
-    segments: list[tuple[tuple[float, float], tuple[float, float]]],
-    matrix: np.ndarray | None,
-) -> list[tuple[tuple[float, float], tuple[float, float]]]:
-    if matrix is None:
-        return segments
-    warped_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
-    for start, end in segments:
-        warped = warp_points([start, end], matrix)
-        warped_segments.append((warped[0], warped[1]))
-    return warped_segments
-
-
-def preprocess_registration_image(
-    image: np.ndarray,
-    *,
-    long_side: int = 900,
-) -> tuple[np.ndarray, float]:
-    gray = to_gray_image(image)
-    gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
-    scale = long_side / max(gray.shape)
-    resized = cv2.resize(
-        gray,
-        (
-            max(1, int(round(gray.shape[1] * scale))),
-            max(1, int(round(gray.shape[0] * scale))),
-        ),
-    )
-    return resized, float(scale)
-
-
-def register_reference_to_fundus(
-    reference_image: np.ndarray,
-    fundus_image: np.ndarray,
-) -> tuple[np.ndarray | None, float | None]:
-    if reference_image.shape[:2] == fundus_image.shape[:2] and np.array_equal(reference_image, fundus_image):
-        return np.eye(2, 3, dtype=np.float32), 1.0
-
-    fundus_prepared, fundus_scale = preprocess_registration_image(fundus_image)
-    reference_prepared, reference_scale = preprocess_registration_image(reference_image)
-
-    motion = np.eye(2, 3, dtype=np.float32)
-    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 150, 1e-5)
-    try:
-        correlation, motion = cv2.findTransformECC(
-            fundus_prepared,
-            reference_prepared,
-            motion,
-            cv2.MOTION_AFFINE,
-            criteria,
-            None,
-            5,
-        )
-    except cv2.error:
-        return None, None
-
-    scale_reference = np.array(
-        [[reference_scale, 0.0, 0.0], [0.0, reference_scale, 0.0], [0.0, 0.0, 1.0]],
-        dtype=np.float32,
-    )
-    inv_scale_fundus = np.array(
-        [[1.0 / fundus_scale, 0.0, 0.0], [0.0, 1.0 / fundus_scale, 0.0], [0.0, 0.0, 1.0]],
-        dtype=np.float32,
-    )
-    motion_h = np.vstack([motion, [0.0, 0.0, 1.0]]).astype(np.float32)
-    original_motion = inv_scale_fundus @ motion_h @ scale_reference
-    return original_motion[:2], float(correlation)
 
 
 def build_raster_segments(
@@ -1137,8 +1044,6 @@ def load_zeiss_oct_dataset(path: str | Path) -> ZeissOCTDataset:
                 center_y_norm=raw_analysis.fovea_y_norm if raw_analysis else None,
             )
 
-            registration_score = 1.0
-            transform = None
             overlay_mode = "zeiss-projection-line"
             projection_mode = "zeiss-raster-bounding-box" if bounds is not None else "zeiss-raster-line"
             localizer_mode = "projection-fallback"
@@ -1151,84 +1056,35 @@ def load_zeiss_oct_dataset(path: str | Path) -> ZeissOCTDataset:
             elif best_fundus is not None:
                 localizer_mode = best_fundus.source_kind
 
-            if geometry_candidate is not None and best_fundus is not None:
-                same_image = (
-                    geometry_candidate.source_file == best_fundus.source_file
-                    and geometry_candidate.source_kind == best_fundus.source_kind
-                    and geometry_candidate.image.shape == best_fundus.image.shape
-                    and np.array_equal(geometry_candidate.image, best_fundus.image)
-                )
-                if not same_image:
-                    transform, registration_score = register_reference_to_fundus(
-                        geometry_candidate.image,
-                        best_fundus.image,
-                    )
-
             display_reason = None
-            if transform is not None and registration_score is not None and registration_score >= 0.20:
-                segments = warp_segments(segments, transform)
-                if outline is not None:
-                    outline = warp_points(outline, transform)
-                    xs = [point[0] for point in outline]
-                    ys = [point[1] for point in outline]
-                    bounds = (min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
-                if fovea_point is not None:
-                    fovea_point = warp_points([fovea_point], transform)[0]
-                overlay_mode = "zeiss-registered-bounding-box" if bounds is not None else "zeiss-registered-line"
-                projection_mode = "zeiss-registered-bounding-box" if bounds is not None else "zeiss-registered-line"
-                localizer_mode = "registered-to-fundus"
+            if best_fundus is not None and photo_segments:
+                display_source_candidate = best_fundus
                 matched_fundus_index = best_fundus.fundus_index
                 matched_fundus_label = best_fundus.image_id
-            else:
-                if best_fundus is not None and photo_segments:
-                    display_source_candidate = best_fundus
-                    matched_fundus_index = best_fundus.fundus_index
-                    matched_fundus_label = best_fundus.image_id
-                    segments = photo_segments
-                    bounds = photo_bounds
-                    outline = build_overlay_outline(bounds)
-                    fovea_point = build_reference_point(
-                        best_fundus.image.shape,
-                        center_x_norm=raw_analysis.fovea_x_norm if raw_analysis else None,
-                        center_y_norm=raw_analysis.fovea_y_norm if raw_analysis else None,
-                    )
-                    overlay_mode = "zeiss-photo-bounding-box" if bounds is not None else "zeiss-photo-line"
-                    projection_mode = "zeiss-photo-bounding-box" if bounds is not None else "zeiss-photo-line"
-                    localizer_mode = "fundus-photo-approx"
-                    if geometry_candidate is not None and best_fundus.fundus_index != geometry_candidate.fundus_index:
-                        if registration_score is None:
-                            display_reason = (
-                                "Automatic registration from Zeiss localizer to fundus image failed; "
-                                "showing the real fundus photo with approximate scan overlay."
-                            )
-                        else:
-                            display_reason = (
-                                "Registration score is too low for reliable fundus alignment; "
-                                f"showing the real fundus photo with approximate scan overlay ({registration_score:.3f} < 0.20)."
-                            )
-                        warning = display_reason
-                elif geometry_candidate is not None:
-                    display_source_candidate = geometry_candidate
-                    matched_fundus_index = geometry_candidate.fundus_index
-                    matched_fundus_label = geometry_candidate.image_id
-                    overlay_mode = "zeiss-geometry-bounding-box" if bounds is not None else "zeiss-geometry-line"
-                    projection_mode = "zeiss-geometry-bounding-box" if bounds is not None else "zeiss-geometry-line"
-                    localizer_mode = geometry_candidate.source_kind
-                    if best_fundus is not None and best_fundus.fundus_index != geometry_candidate.fundus_index:
-                        if registration_score is None:
-                            display_reason = "Automatic registration from Zeiss localizer to fundus image failed; falling back to geometry reference."
-                        else:
-                            display_reason = (
-                                "Registration score is too low for reliable fundus alignment; "
-                                f"falling back to geometry reference ({registration_score:.3f} < 0.20)."
-                            )
-                        warning = display_reason
-                elif best_fundus is not None:
-                    matched_fundus_index = best_fundus.fundus_index
-                    matched_fundus_label = best_fundus.image_id
-                    overlay_mode = "zeiss-fundus-bounding-box" if bounds is not None else "zeiss-fundus-line"
-                    projection_mode = "zeiss-fundus-bounding-box" if bounds is not None else "zeiss-fundus-line"
-                    localizer_mode = best_fundus.source_kind
+                segments = photo_segments
+                bounds = photo_bounds
+                outline = build_overlay_outline(bounds)
+                fovea_point = build_reference_point(
+                    best_fundus.image.shape,
+                    center_x_norm=raw_analysis.fovea_x_norm if raw_analysis else None,
+                    center_y_norm=raw_analysis.fovea_y_norm if raw_analysis else None,
+                )
+                overlay_mode = "zeiss-photo-bounding-box" if bounds is not None else "zeiss-photo-line"
+                projection_mode = "zeiss-photo-bounding-box" if bounds is not None else "zeiss-photo-line"
+                localizer_mode = "fundus-photo-approx"
+            elif geometry_candidate is not None:
+                display_source_candidate = geometry_candidate
+                matched_fundus_index = geometry_candidate.fundus_index
+                matched_fundus_label = geometry_candidate.image_id
+                overlay_mode = "zeiss-geometry-bounding-box" if bounds is not None else "zeiss-geometry-line"
+                projection_mode = "zeiss-geometry-bounding-box" if bounds is not None else "zeiss-geometry-line"
+                localizer_mode = geometry_candidate.source_kind
+            elif best_fundus is not None:
+                matched_fundus_index = best_fundus.fundus_index
+                matched_fundus_label = best_fundus.image_id
+                overlay_mode = "zeiss-fundus-bounding-box" if bounds is not None else "zeiss-fundus-line"
+                projection_mode = "zeiss-fundus-bounding-box" if bounds is not None else "zeiss-fundus-line"
+                localizer_mode = best_fundus.source_kind
 
             segmentation_surfaces = prepare_segmentation_surfaces(
                 raw_analysis,
@@ -1268,7 +1124,6 @@ def load_zeiss_oct_dataset(path: str | Path) -> ZeissOCTDataset:
                 "display_source": display_source_candidate.source_file if display_source_candidate else "projection-fallback",
                 "display_source_kind": display_source_candidate.source_kind if display_source_candidate else "projection-fallback",
                 "display_reason": display_reason,
-                "registration_score": registration_score,
                 "raw_analysis_source": raw_analysis.source_file if raw_analysis else None,
                 "fovea_center_norm": (
                     [raw_analysis.fovea_x_norm, raw_analysis.fovea_y_norm]

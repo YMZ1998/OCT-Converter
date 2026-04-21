@@ -46,7 +46,6 @@ except ImportError:
     QT_AVAILABLE = False
 
 from hdb_fa_parser import (
-    DEFAULT_INPUT_PATH,
     HeidelbergFAFrame,
     HeidelbergFAStudyInfo,
     HeidelbergViewerTrack,
@@ -59,7 +58,6 @@ from hdb_fa_parser import (
     laterality_to_chinese,
     load_heidelberg_fa_dataset,
     normalize_to_uint8,
-    parse_args,
     safe_slug,
     save_image_array,
     summarize_tracks_for_console,
@@ -1214,7 +1212,6 @@ if QT_AVAILABLE:
             )
             summary_text += (
                 f"\nDevice: {self.study_info.device_display} | Study: {self.study_info.study_datetime_iso} | "
-                f"TZ: {self.study_info.timezone_display}"
             )
             self.summary_label.setText(summary_text)
 
@@ -1238,7 +1235,6 @@ if QT_AVAILABLE:
             start_dir = (
                 self.path_edit.text().strip()
                 or self.settings.value("last_dir", "", type=str)
-                or str(DEFAULT_INPUT_PATH)
             )
             selected, _ = QFileDialog.getOpenFileName(
                 self,
@@ -1569,7 +1565,7 @@ def main() -> int:
     application.setApplicationName("HeidelbergFAQtViewer")
     application.setStyle("Fusion")
 
-    window = HeidelbergFAZeissViewerWindow(DEFAULT_INPUT_PATH)
+    window = HeidelbergFAZeissViewerWindow("")
     window.show()
     return application.exec_()
 

@@ -72,7 +72,6 @@ FUNDUS_SOURCE_LABELS = {
 }
 
 DISPLAY_MODE_LABELS = {
-    "registered-to-fundus": "显示=配准到眼底图",
     "geometry-reference": "显示=定位参考图",
     "geometry-reference-fallback": "显示=定位参考图回退",
     "fundus-or-projection": "显示=眼底图/投影",
@@ -112,9 +111,7 @@ class VolumeViewModel:
     segmentation_surfaces: list[np.ndarray]
     fovea_point: tuple[float, float] | None
     photo_fovea_point: tuple[float, float] | None
-    registration_score: float | None
     display_mode: str
-    display_reason: str | None
     metadata_text: str
     fundus_source_file: str
     fundus_source_kind: str
@@ -527,75 +524,6 @@ def build_overlay_outline(bounds: tuple[float, float, float, float] | None) -> l
     return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
 
 
-def warp_points(points: list[tuple[float, float]], matrix: np.ndarray | None) -> list[tuple[float, float]]:
-    if not points:
-        return []
-    if matrix is None:
-        return [(float(x), float(y)) for x, y in points]
-    point_array = np.asarray(points, dtype=np.float32).reshape(-1, 1, 2)
-    if matrix.shape == (2, 3):
-        warped = cv2.transform(point_array, matrix)
-    elif matrix.shape == (3, 3):
-        warped = cv2.perspectiveTransform(point_array, matrix)
-    else:
-        raise ValueError(f"Unsupported transform shape: {matrix.shape}")
-    return [tuple(map(float, point)) for point in warped.reshape(-1, 2)]
-
-
-def warp_segments(
-    segments: list[tuple[tuple[float, float], tuple[float, float]]],
-    matrix: np.ndarray | None,
-) -> list[tuple[tuple[float, float], tuple[float, float]]]:
-    if matrix is None:
-        return segments
-    warped_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
-    for start, end in segments:
-        warped = warp_points([start, end], matrix)
-        warped_segments.append((warped[0], warped[1]))
-    return warped_segments
-
-
-def preprocess_registration_image(image: np.ndarray, *, long_side: int = 900) -> tuple[np.ndarray, float]:
-    gray = to_gray_image(image)
-    gray = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
-    scale = long_side / max(gray.shape)
-    resized = cv2.resize(gray, (max(1, int(round(gray.shape[1] * scale))), max(1, int(round(gray.shape[0] * scale)))))
-    return resized, float(scale)
-
-
-def register_reference_to_fundus(
-    reference_image: np.ndarray,
-    fundus_image: np.ndarray,
-) -> tuple[np.ndarray | None, float | None]:
-    if reference_image.shape[:2] == fundus_image.shape[:2] and np.array_equal(reference_image, fundus_image):
-        return np.eye(2, 3, dtype=np.float32), 1.0
-
-    fundus_prepared, fundus_scale = preprocess_registration_image(fundus_image)
-    reference_prepared, reference_scale = preprocess_registration_image(reference_image)
-
-    motion = np.eye(2, 3, dtype=np.float32)
-    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 150, 1e-5)
-    try:
-        correlation, motion = cv2.findTransformECC(
-            fundus_prepared,
-            reference_prepared,
-            motion,
-            cv2.MOTION_AFFINE,
-            criteria,
-            None,
-            5,
-        )
-    except cv2.error:
-        return None, None
-
-    scale_reference = np.array([[reference_scale, 0.0, 0.0], [0.0, reference_scale, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
-    inv_scale_fundus = np.array([[1.0 / fundus_scale, 0.0, 0.0], [0.0, 1.0 / fundus_scale, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
-    motion_h = np.vstack([motion, [0.0, 0.0, 1.0]]).astype(np.float32)
-    original_motion = inv_scale_fundus @ motion_h @ scale_reference
-    return original_motion[:2], float(correlation)
-
-
 def build_raster_segments(
     num_slices: int,
     fundus_shape: tuple[int, int],
@@ -806,8 +734,6 @@ def build_metadata_text(
     geometry_candidate: FundusCandidate | None,
     display_candidate: FundusCandidate | None,
     display_mode: str,
-    display_reason: str | None,
-    registration_score: float | None,
     raw_analysis: RawAnalysisData | None,
     segmentation_surface_count: int,
     *,
@@ -832,8 +758,6 @@ def build_metadata_text(
         "display_kind_label": describe_fundus_source_kind(display_candidate.source_kind) if display_candidate else describe_fundus_source_kind("projection-fallback"),
         "display_mode": display_mode,
         "display_mode_label": DISPLAY_MODE_LABELS.get(display_mode, display_mode),
-        "display_reason": display_reason,
-        "registration_score": registration_score,
         "raw_analysis_source": raw_analysis.source_file if raw_analysis else None,
         "fovea_center_norm": (
             [raw_analysis.fovea_x_norm, raw_analysis.fovea_y_norm]
@@ -846,7 +770,6 @@ def build_metadata_text(
         "fundus_photo_available": fundus_candidate is not None,
         "scan_width_mm": scan_width_mm,
         "scan_height_mm": scan_height_mm,
-        "overlay_note": "优先使用 OCT enface/localizer 与眼底图做仿射配准；配准分数低于 0.20 时改为直接显示定位参考图，避免错误映射。",
         "bscan_guides": "优先显示 Raw Data 中解析出的真实分层；缺失时才使用启发式辅助线。",
     }
     return json.dumps(metadata, indent=2, ensure_ascii=False)
@@ -1028,49 +951,22 @@ def load_exam(exam_dir: Path) -> ExamViewModel:
             center_x_norm=raw_analysis.fovea_x_norm if raw_analysis else None,
             center_y_norm=raw_analysis.fovea_y_norm if raw_analysis else None,
         )
-        registration_score = 1.0
-        transform = None
         display_mode = "fundus-or-projection"
-        display_reason = None
-        if geometry_candidate is not None and best_fundus is not None:
-            same_image = (
-                geometry_candidate.source_file == best_fundus.source_file
-                and geometry_candidate.source_kind == best_fundus.source_kind
-                and geometry_candidate.image.shape == best_fundus.image.shape
-                and np.array_equal(geometry_candidate.image, best_fundus.image)
-            )
-            if not same_image:
-                transform, registration_score = register_reference_to_fundus(geometry_candidate.image, best_fundus.image)
-        if transform is not None and registration_score is not None and registration_score >= 0.20:
-            segments = warp_segments(segments, transform)
-            spokes = warp_segments(spokes, transform)
-            if outline is not None:
-                outline = warp_points(outline, transform)
-                xs = [point[0] for point in outline]
-                ys = [point[1] for point in outline]
-                bounds = (min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
-            if fovea_point is not None:
-                fovea_point = warp_points([fovea_point], transform)[0]
+        fundus_image = geometry_image
+        if best_fundus is not None and photo_segments:
+            display_source_candidate = best_fundus
+            segments = photo_segments
+            bounds = photo_bounds
+            outline = photo_outline
+            fovea_point = photo_fovea_point
+            spokes = build_overlay_spokes(bounds)
             fundus_image = displayed_fundus
-            display_mode = "registered-to-fundus"
-            photo_segments = segments
-            photo_bounds = bounds
-            photo_outline = outline
-            photo_fovea_point = fovea_point
-        else:
-            fundus_image = geometry_image
-            if geometry_candidate is not None:
-                display_source_candidate = geometry_candidate
-                display_mode = "geometry-reference"
-                if best_fundus is not None and best_fundus.source_file != geometry_candidate.source_file:
-                    display_mode = "geometry-reference-fallback"
-                    if registration_score is None:
-                        display_reason = "无法稳定完成 OCT 定位参考图到眼底照片的自动配准，已回退到定位参考图。"
-                    else:
-                        display_reason = (
-                            f"OCT 定位参考图到眼底照片的配准分数过低（{registration_score:.3f} < 0.20），"
-                            "已回退到定位参考图。"
-                        )
+            display_mode = "fundus-or-projection"
+        elif geometry_candidate is not None:
+            display_source_candidate = geometry_candidate
+            display_mode = "geometry-reference"
+            if best_fundus is not None and best_fundus.source_file != geometry_candidate.source_file:
+                display_mode = "geometry-reference-fallback"
 
         segmentation_surfaces = prepare_segmentation_surfaces(
             raw_analysis,
@@ -1090,8 +986,6 @@ def load_exam(exam_dir: Path) -> ExamViewModel:
             geometry_candidate=geometry_candidate,
             display_candidate=display_source_candidate,
             display_mode=display_mode,
-            display_reason=display_reason,
-            registration_score=registration_score,
             raw_analysis=raw_analysis,
             segmentation_surface_count=len(segmentation_surfaces),
             scan_width_mm=item["scan_width_mm"],
@@ -1116,9 +1010,7 @@ def load_exam(exam_dir: Path) -> ExamViewModel:
                 segmentation_surfaces=segmentation_surfaces,
                 fovea_point=fovea_point,
                 photo_fovea_point=photo_fovea_point,
-                registration_score=registration_score,
                 display_mode=display_mode,
-                display_reason=display_reason,
                 metadata_text=metadata_text,
                 fundus_source_file=display_source_candidate.source_file if display_source_candidate else "projection-fallback",
                 fundus_source_kind=display_source_candidate.source_kind if display_source_candidate else "projection-fallback",
@@ -1637,14 +1529,9 @@ class ZeissViewerWindow(QMainWindow):
             _, _, width, height = model.overlay_bounds
             segmentation_label = f"分层={len(model.segmentation_surfaces)} 条" if model.segmentation_surfaces else "分层=未解析"
             fovea_label = "黄斑中心=已解析" if model.fovea_point is not None else "黄斑中心=未解析"
-            registration_label = (
-                f"配准分数={model.registration_score:.3f}"
-                if model.registration_score is not None
-                else "配准分数=未计算"
-            )
             self.geometry_info_value.setText(
                 f"覆盖框：{width:.1f}px × {height:.1f}px | {segmentation_label} | {fovea_label} | "
-                f"{DISPLAY_MODE_LABELS.get(model.display_mode, model.display_mode)} | {registration_label}"
+                f"{DISPLAY_MODE_LABELS.get(model.display_mode, model.display_mode)}"
             )
         else:
             self.geometry_info_value.setText("-")
@@ -1672,9 +1559,8 @@ class ZeissViewerWindow(QMainWindow):
         else:
             self.canvas.ax_fundus.imshow(fundus, origin="upper")
         self.canvas.ax_fundus.axis("off")
-        title_suffix = " | 直接叠加定位" if showing_photo else ""
         self.canvas.ax_fundus.set_title(
-            f"眼底图 / {describe_fundus_source_kind(fundus_source_kind)} / {Path(fundus_source_file).stem}{title_suffix}",
+            f"眼底图 / {describe_fundus_source_kind(fundus_source_kind)} / {Path(fundus_source_file).stem}",
             color="#E5E7EB",
             fontsize=13,
         )
