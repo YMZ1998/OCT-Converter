@@ -17,6 +17,8 @@ import numpy as np
 import pydicom
 import tifffile
 
+from scripts.old.dir_process import remove_and_create_dir
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -617,6 +619,7 @@ def main() -> None:
 
     input_root = args.input_root
     output_dir = args.output_dir or (input_root / "parsed_output")
+    remove_and_create_dir(output_dir)
     selected_exam_ids = set(args.exam_id) if args.exam_id else None
 
     manifest = scan_dataset(
