@@ -145,6 +145,7 @@ for file in os.listdir(dir):
         print("-" * 40)
         print(file)
         ds = pydicom.dcmread(file_path)
+        print(ds)
         has_pixel_data = "PixelData" in ds
         print(f"HasPixelData: {has_pixel_data}")
         rows = getattr(ds, "Rows", None)

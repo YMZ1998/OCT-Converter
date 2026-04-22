@@ -11,9 +11,8 @@ if not series_ids:
     print("❌ 没有找到任何 DICOM series。")
 
 print(f"📦 找到 {len(series_ids)} 个 DICOM series.")
-
-# ds = pydicom.dcmread(r"E:\Data\OCT\蔡司OCT\DataFiles\E195\2TXU4UFY5T892H35RCF8PBV9D4KKGIER27IOLS4X2ZU.EX.DCM")
-ds = pydicom.dcmread(r'E:\Data\OCT\蔡司FA\2\2000010120251027JenaOS(40012).dcm')
+ds = pydicom.dcmread(r"E:\Data\OCT\蔡司OCT\DataFiles\E195\2TXU4UFY5T892H35RCF8PBV9D4KKGIER27IOLS4X2ZU.EX.DCM")
+# ds = pydicom.dcmread(r'E:\Data\OCT\蔡司FA\2\2000010120251027JenaOS(40012).dcm')
 # ds = pydicom.dcmread( r'E:\Data\OCT\蔡司CFP\18017 V1 FP\2000010120251027JenaOD(39979).dcm')
 # ds = pydicom.dcmread( r'E:\Data\OCT\蔡司CFP\18017 V1 FP\2000010120251027JenaOD(39984).dcm')
 print(ds)
