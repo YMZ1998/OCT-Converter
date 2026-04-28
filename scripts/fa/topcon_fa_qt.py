@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -43,8 +42,8 @@ try:
         TopconFAFrame,
         TopconFAStudyInfo,
         load_topcon_fa_dataset,
-        modality_summary,
-    )
+        modality_summary, ELAPSED_LABEL_PATTERN, LATERALITY_PATTERN, IMAGE_NAME_PATTERN,
+)
 except ImportError:
     from topcon_fa_parser import (
         DEFAULT_INPUT_DIR,
@@ -268,7 +267,7 @@ def parse_datafile_records(input_dir: Path) -> list[TopconFAFrame]:
         record_start = match.start() - 96
         if record_start < 0:
             continue
-        record = raw[record_start : record_start + 200]
+        record = raw[record_start: record_start + 200]
         if len(record) < 200:
             record = record.ljust(200, b"\x00")
 
@@ -653,7 +652,8 @@ class TopconFAViewerWindow(QMainWindow):
         self.play_timer.setInterval(int(1000 / fps))
 
     def choose_directory(self) -> None:
-        start_dir = str(self.input_dir) if self.input_dir else str(DEFAULT_INPUT_DIR.parent if DEFAULT_INPUT_DIR.exists() else Path.home())
+        start_dir = str(self.input_dir) if self.input_dir else str(
+            DEFAULT_INPUT_DIR.parent if DEFAULT_INPUT_DIR.exists() else Path.home())
         selected = QFileDialog.getExistingDirectory(self, "选择 Topcon FA 目录", start_dir)
         if selected:
             self.load_directory(selected)

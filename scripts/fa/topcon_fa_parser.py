@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import re
+import sys
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-import sys
-import unicodedata
 
+import unicodedata
 from PIL import Image
 
 DEFAULT_INPUT_DIR = Path(r"E:\Data\OCT\topcon-FA")
@@ -54,7 +54,7 @@ class TopconFAFrame:
     @property
     def size_display(self) -> str:
         if self.width and self.height:
-            return f"{self.width} 脳 {self.height}"
+            return f"{self.width} * {self.height}"
         return "-"
 
 
@@ -141,9 +141,9 @@ def load_image_size(path: Path) -> tuple[int | None, int | None]:
 def normalize_sex(value: str) -> str:
     value = value.strip().upper()
     return {
-        "M": "鐢?",
-        "F": "濂?",
-        "O": "鍏朵粬",
+        "M": "Male",
+        "F": "Female",
+        "O": "Other",
     }.get(value, value)
 
 
@@ -157,9 +157,9 @@ def infer_laterality(*candidates: str) -> tuple[str, str]:
             continue
         eye = match.group("eye").upper()
         if eye in {"OD", "R"}:
-            return "鍙崇溂", f"鐢?{text} 鎺ㄦ柇"
+            return "OD", ""
         if eye in {"OS", "L"}:
-            return "宸︾溂", f"鐢?{text} 鎺ㄦ柇"
+            return "OS", ""
     return "", ""
 
 
@@ -213,7 +213,7 @@ def parse_datafile_records(input_dir: Path) -> list[TopconFAFrame]:
         record_start = match.start() - 96
         if record_start < 0:
             continue
-        record = raw[record_start : record_start + 200]
+        record = raw[record_start: record_start + 200]
         if len(record) < 200:
             record = record.ljust(200, b"\x00")
 
@@ -398,7 +398,6 @@ __all__ = [
     "resolve_input_dir",
 ]
 
-
 if __name__ == "__main__":
     example_path = DEFAULT_INPUT_DIR
     print(f"Testing Topcon FA parser with: {example_path}")
@@ -412,6 +411,5 @@ if __name__ == "__main__":
         print(f"Resolved input directory: {input_dir}")
         print(f"Frame count: {len(frames)}")
         print(f"Modalities: {modality_summary(frames)}")
-        print()
         dump_study_info(study_info)
-        dump_frames(frames)
+        # dump_frames(frames)

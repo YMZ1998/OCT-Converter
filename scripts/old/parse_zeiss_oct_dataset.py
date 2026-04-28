@@ -4,7 +4,6 @@ import argparse
 import csv
 import json
 import math
-import sys
 import warnings
 from collections import Counter
 from datetime import datetime
@@ -18,27 +17,13 @@ import pydicom
 import tifffile
 
 from scripts.old.dir_process import remove_and_create_dir
+from scripts.old.zeiss_dicom import ZEISSDicom
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-
 DEFAULT_INPUT_ROOT = Path(r"E:\Data\OCT\蔡司OCT")
 MODE_CHOICES = ("manifest", "preview", "export", "all")
-
-
-def ensure_repo_on_syspath() -> None:
-    repo_root = Path(__file__).resolve().parent.parent
-    repo_root_str = str(repo_root)
-    if repo_root_str not in sys.path:
-        sys.path.insert(0, repo_root_str)
-
-
-def get_zeiss_reader_class():
-    ensure_repo_on_syspath()
-    from scripts.old.zeiss_dicom import ZEISSDicom
-
-    return ZEISSDicom
 
 
 def ensure_zeiss_fundus_orientation(image_or_fundus: Any) -> np.ndarray:
@@ -46,7 +31,6 @@ def ensure_zeiss_fundus_orientation(image_or_fundus: Any) -> np.ndarray:
     if getattr(image_or_fundus, "orientation_normalized", False):
         return image
 
-    ZEISSDicom = get_zeiss_reader_class()
     return ZEISSDicom.normalize_fundus_orientation(image)
 
 
@@ -172,11 +156,9 @@ def save_oct_exports(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     gray_volume = to_gray_volume(volume_array)
+    print(f"Volume shape: {gray_volume.shape}")
     gray_volume_uint8 = normalize_uint8(gray_volume)
     center_index = gray_volume_uint8.shape[0] // 2
-
-    npy_path = output_dir / "volume.npy"
-    np.save(npy_path, gray_volume)
 
     tiff_path = output_dir / "volume.tiff"
     tifffile.imwrite(tiff_path, gray_volume_uint8, photometric="minisblack")
@@ -216,19 +198,16 @@ def save_fundus_exports(image_array: np.ndarray, output_dir: Path) -> dict[str, 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     image = ensure_zeiss_fundus_orientation(image_array)
+    print("Fundus orientation:", image.shape)
     image_uint8 = normalize_uint8(image)
 
     png_path = output_dir / "fundus.png"
     write_png(png_path, image_uint8)
 
-    npy_path = output_dir / "fundus.npy"
-    np.save(npy_path, image)
-
     return {
         "shape": list(image.shape),
         "dtype": str(image.dtype),
         "png_path": str(png_path),
-        "npy_path": str(npy_path),
     }
 
 
@@ -348,7 +327,6 @@ def extract_dicom_header(dcm_path: Path, referenced_files: set[str]) -> dict[str
 
 
 def decode_zeiss_file(dcm_path: Path) -> tuple[list[Any], list[Any]]:
-    ZEISSDicom = get_zeiss_reader_class()
     reader = ZEISSDicom(dcm_path)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
