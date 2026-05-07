@@ -2,12 +2,14 @@ import os
 
 from matplotlib import pyplot as plt
 
-from scripts.old.dir_process import remove_and_create_dir
+from scripts.old.dir_process import remove_and_create_dir, get_base_dir
 from zeiss_dicom import ZEISSDicom
 
-dir = r'E:\Data\OCT\蔡司OCT\DataFiles\E195'
-output_dir = r"E:\Data\OCT\Result\zeiss"
-remove_and_create_dir(output_dir)
+# dir = r'E:\Data\OCT\蔡司OCT\DataFiles\E195'
+dir = r'E:\Data\OCT3\ZEISSOCT\FS006GIA_RD-0034-KH902-60601-RVO-JNYKYY-72-R-072009RVO-01-OCT\DataFiles\E825'
+
+# output_dir = os.path.join(get_base_dir(dir), "output")
+# remove_and_create_dir(output_dir)
 
 for file in os.listdir(dir):
     if file.endswith('.DCM'):

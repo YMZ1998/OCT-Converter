@@ -5,9 +5,9 @@ import numpy as np
 
 # 导入 OCT 数据
 # ev = ep.import_heyex_e2e(r"E:\Data\OCT\海德堡\海德堡FA.E2E")
-# ev = ep.import_heyex_e2e(r"E:\Data\OCT\海德堡\海德堡OCT.E2E")
+ev = ep.import_heyex_e2e(r"E:\Data\OCT\海德堡\海德堡OCT.E2E")
 # ev = ep.import_heyex_e2e(r"E:\Data\OCT2\海德堡\KH902-R10-007-D-007001DME-V4-OCT.E2E")
-ev = ep.import_topcon_fda(r"E:\Data\OCT\拓普康OCT\41365.fda")
+# ev = ep.import_topcon_fda(r"E:\Data\OCT\拓普康OCT\41365.fda")
 # ev = ep.import_topcon_fda(r"E:\Data\OCT\拓普康OCT\41365.fda")
 # for i, v in enumerate(ev):
 #     print(i, type(v))

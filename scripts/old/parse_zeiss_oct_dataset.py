@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import csv
 import json
 import math
@@ -107,7 +106,8 @@ def normalize_uint8(array: np.ndarray) -> np.ndarray:
 
 def to_gray_volume(volume_array: np.ndarray) -> np.ndarray:
     volume = np.asarray(volume_array)
-
+    print(f"Volume shape1: {volume.shape}")
+    # volume = volume.transpose(0, 2, 1)
     if volume.ndim == 2:
         return volume[np.newaxis, ...]
 
@@ -116,7 +116,6 @@ def to_gray_volume(volume_array: np.ndarray) -> np.ndarray:
 
     if volume.ndim == 4 and volume.shape[-1] >= 1:
         return volume[..., 0]
-
     raise ValueError(f"不支持的 OCT 体数据维度: {volume.shape}")
 
 
@@ -158,13 +157,9 @@ def save_oct_exports(
     gray_volume = to_gray_volume(volume_array)
     print(f"Volume shape: {gray_volume.shape}")
     gray_volume_uint8 = normalize_uint8(gray_volume)
-    center_index = gray_volume_uint8.shape[0] // 2
-
+    print(f"Volume uint8 shape: {gray_volume_uint8.shape}")
     tiff_path = output_dir / "volume.tiff"
     tifffile.imwrite(tiff_path, gray_volume_uint8, photometric="minisblack")
-
-    center_path = output_dir / "center_slice.png"
-    write_png(center_path, gray_volume_uint8[center_index])
 
     projection = gray_volume.astype(np.float32).mean(axis=1)
     projection_path = output_dir / "projection.png"
@@ -185,9 +180,7 @@ def save_oct_exports(
     return {
         "shape": list(gray_volume.shape),
         "dtype": str(gray_volume.dtype),
-        "npy_path": str(npy_path),
         "tiff_path": str(tiff_path),
-        "center_slice_path": str(center_path),
         "projection_path": str(projection_path),
         "montage_path": str(montage_path),
         "slice_png_paths": slice_paths,
@@ -196,13 +189,12 @@ def save_oct_exports(
 
 def save_fundus_exports(image_array: np.ndarray, output_dir: Path) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    image = ensure_zeiss_fundus_orientation(image_array)
+    # image = ensure_zeiss_fundus_orientation(image_array)
+    image = (image_array)
     print("Fundus orientation:", image.shape)
-    image_uint8 = normalize_uint8(image)
-
+    # image_uint8 = normalize_uint8(image)
     png_path = output_dir / "fundus.png"
-    write_png(png_path, image_uint8)
+    write_png(png_path, image_array)
 
     return {
         "shape": list(image.shape),
@@ -378,6 +370,19 @@ def export_decoded_outputs(
     for index, image in enumerate(fundus_images):
         corrected_image = ensure_zeiss_fundus_orientation(image)
         fundus_uint8 = normalize_uint8(corrected_image)
+        print("Fundus shape:", fundus_uint8.shape)
+        new_shape = max(fundus_uint8.shape[0], fundus_uint8.shape[1])
+        # ===== resize =====
+        fundus_uint8 = cv2.resize(fundus_uint8, (new_shape, new_shape), interpolation=cv2.INTER_LINEAR)
+
+        # ===== 旋转 =====
+        # h, w = resized.shape[:2]
+        # center = (w // 2, h // 2)
+        # M = cv2.getRotationMatrix2D(center, 90, 1.0)
+        # fundus_uint8 = cv2.warpAffine(resized, M, (w, h))
+
+        # fundus_uint8=np.rot90(fundus_uint8, axes=(0, 1), k=1).copy()
+        print("Fundus shape:", fundus_uint8.shape)
 
         if want_preview:
             preview_path = (
@@ -390,7 +395,7 @@ def export_decoded_outputs(
 
         if want_export:
             fundus_dir = output_dir / "exports" / exam_id / base_stem / f"fundus_{index:02d}"
-            fundus_assets.append(save_fundus_exports(corrected_image, fundus_dir))
+            fundus_assets.append(save_fundus_exports(fundus_uint8, fundus_dir))
 
     return {
         "decoded_oct_count": len(oct_volumes),
@@ -557,59 +562,17 @@ def print_summary(manifest: dict[str, Any], output_dir: Path) -> None:
         print(f"  - {exam['exam_id']}: patient_id={patient_id or 'N/A'}, {counts}")
 
 
-def build_argparser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="批量解析蔡司 OCT 导出目录，并生成清单、预览和解码导出。")
-    parser.add_argument(
-        "--input-root",
-        type=Path,
-        default=DEFAULT_INPUT_ROOT,
-        help=f"蔡司 OCT 导出根目录，默认值: {DEFAULT_INPUT_ROOT}",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=None,
-        help="结果输出目录，默认写到 <input-root>\\parsed_output",
-    )
-    parser.add_argument(
-        "--mode",
-        choices=MODE_CHOICES,
-        default="all",
-        help="manifest=仅清单，preview=清单+预览，export=清单+导出，all=全部",
-    )
-    parser.add_argument(
-        "--exam-id",
-        nargs="*",
-        default=None,
-        help="只处理指定批次，例如 --exam-id E195 E196",
-    )
-    parser.add_argument(
-        "--export-slice-pngs",
-        action="store_true",
-        help="为 OCT 体数据额外导出全部 B-scan 切片 PNG。",
-    )
-    return parser
-
-
-def main() -> None:
-    parser = build_argparser()
-    args = parser.parse_args()
-
-    input_root = args.input_root
-    output_dir = args.output_dir or (input_root / "parsed_output")
+if __name__ == "__main__":
+    input_root = Path(r"E:\Data\OCT3\ZEISSOCT\FS006GIA_RD-0034-KH902-60601-RVO-JNYKYY-72-R-072009RVO-01-OCT")
+    output_dir = input_root / "parsed_output"
     remove_and_create_dir(output_dir)
-    selected_exam_ids = set(args.exam_id) if args.exam_id else None
 
     manifest = scan_dataset(
         input_root=input_root,
         output_dir=output_dir,
-        mode=args.mode,
-        export_slice_pngs=args.export_slice_pngs,
-        selected_exam_ids=selected_exam_ids,
+        mode="all",
+        export_slice_pngs=True,
+        selected_exam_ids=None,
     )
     write_manifest(manifest, output_dir)
     print_summary(manifest, output_dir)
-
-
-if __name__ == "__main__":
-    main()

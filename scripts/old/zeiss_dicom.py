@@ -12,6 +12,8 @@ import pydicom
 from pydicom.encaps import generate_pixel_data_frame
 
 from oct_converter.image_types import FundusImageWithMetaData, OCTVolumeWithMetaData
+from scripts.old.show_volume import show_volume_slider
+from utils import clean_text
 
 pydicom.config.settings.reading_validation_mode = pydicom.config.IGNORE
 pydicom.config.settings.writing_validation_mode = pydicom.config.IGNORE
@@ -20,18 +22,6 @@ ZEISS_MANUFACTURER_PREFIX = "Carl Zeiss Meditec"
 OPHTHALMIC_PHOTOGRAPHY_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.77.1.5.1"
 PRIVATE_FRAME_SEQUENCE_TAG = (0x0407, 0x1005)
 PRIVATE_FRAME_DATA_TAG = (0x0407, 0x1006)
-
-
-def clean_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if hasattr(value, "value"):
-        value = value.value
-    if isinstance(value, bytes):
-        value = value.decode("utf-8", errors="ignore")
-    text = str(value).split("\x00", 1)[0]
-    text = "".join(char for char in text if char.isprintable())
-    return text.strip()
 
 
 def clean_digits(value: Any) -> str:
@@ -100,7 +90,10 @@ class ZEISSDicom(object):
         array = np.asarray(image)
         if array.ndim < 2:
             raise ValueError(f"Unsupported Zeiss fundus image shape: {array.shape}")
-        return np.rot90(array, axes=(0, 1), k=3).copy()
+        # return np.rot90(array, axes=(0, 1), k=3).copy()
+        array = array.transpose(1, 0, 2)
+        array = np.flip(array, axis=1)
+        return array
 
     @staticmethod
     def normalize_oct_orientation(volume: list[np.ndarray] | np.ndarray) -> np.ndarray:
@@ -112,7 +105,10 @@ class ZEISSDicom(object):
             array = array[np.newaxis, ...]
         if array.ndim != 3:
             raise ValueError(f"Unsupported Zeiss OCT volume shape: {array.shape}")
-        return np.rot90(array, axes=(1, 2), k=3).copy()
+        # return np.rot90(array, axes=(1, 2), k=3).copy()
+        array = array.transpose(0, 2, 1)
+        array = np.flip(array, axis=2)
+        return array
 
     @staticmethod
     def frame_to_gray(frame: np.ndarray) -> np.ndarray:
@@ -360,10 +356,19 @@ class ZEISSDicom(object):
         seen_oct: set[tuple[tuple[int, ...], str, str]],
         seen_fundus: set[tuple[tuple[int, ...], str, str]],
     ) -> None:
+
+        PixelSpacing = clean_text(getattr(ds, "PixelSpacing", None))
+        Rows = getattr(ds, "Rows", None)
+        Columns = parse_int(getattr(ds, "Columns", None))
+        print("Rows:", Rows)
+        print("Columns:", Columns)
+        print("PixelSpacing:", PixelSpacing)
+        num_frames = parse_int(getattr(ds, "NumberOfFrames", None))
+        print("num_frames:", num_frames)
         if "PixelData" not in ds:
             return
-
-        num_frames = parse_int(getattr(ds, "NumberOfFrames", None))
+        # if num_frames is None:
+        #     return
         decoded_frames: list[np.ndarray] = []
         if num_frames is not None and num_frames > 0:
             try:
@@ -378,13 +383,25 @@ class ZEISSDicom(object):
         if decoded_frames:
             sop_class_uid = clean_text(getattr(ds, "SOPClassUID", ""))
             if sop_class_uid == OPHTHALMIC_PHOTOGRAPHY_SOP_CLASS_UID or not self.is_volume_like(decoded_frames):
-                for frame in decoded_frames:
-                    normalized = self.normalize_fundus_frame(frame, from_cv2=True)
-                    self.append_unique_fundus(
-                        fundus_outputs,
-                        seen_fundus,
+                if len(decoded_frames) == 1:
+                    for frame in decoded_frames:
+                        normalized = self.normalize_fundus_frame(frame, from_cv2=True)
+                        self.append_unique_fundus(
+                            fundus_outputs,
+                            seen_fundus,
+                            ds,
+                            normalized,
+                            source_kind="pixel_data",
+                        )
+                else:
+                    normalized_volume = self.normalize_oct_orientation(
+                        [self.frame_to_gray(frame) for frame in decoded_frames]
+                    )
+                    self.append_unique_oct(
+                        oct_outputs,
+                        seen_oct,
                         ds,
-                        normalized,
+                        normalized_volume,
                         source_kind="pixel_data",
                     )
                 return
@@ -477,6 +494,114 @@ class ZEISSDicom(object):
                 source_kind="pixel_array",
             )
 
+    def find_oct_tags(self, dataset, data_element):
+        if data_element.tag == (0x0407, 0x1005):
+            num_frames = len(data_element.value)
+            volume = []
+            print(f"Found {num_frames} frames")
+            for frame in data_element:
+                scrambled_frame = frame[0x0407, 0x1006]
+                unscrambled_frame = self.unscramble_frame(scrambled_frame)
+                frame = cv2.imdecode(
+                    np.frombuffer(unscrambled_frame, np.uint8), flags=1
+                )
+                if num_frames == 1:
+                    volume = frame
+                else:
+                    # is grayscale so we take the first channel
+                    volume.append(frame[:, :, 0])
+            if num_frames == 1:
+                self.all_fundus.append(volume)
+            else:
+                self.all_oct.append(volume)
+
+    def read_data2(self):
+        """Reads OCT and fundus data."""
+        ds = pydicom.dcmread(self.filepath)
+        if not ds.Manufacturer.startswith("Carl Zeiss Meditec"):
+            raise ValueError(
+                "This does not appear to be a Zeiss DCM. You may need to read with the DCM class."
+            )
+
+        self.all_oct = []
+        self.all_fundus = []
+        all_oct_out = []
+        all_fundus_out = []
+
+        # pass 1
+        ds.walk(self.find_oct_tags)
+        for volume in self.all_oct:
+            print("Volume shape:", volume.shape)
+            array = np.rot90(np.array(volume), axes=(1, 2), k=3)
+            all_oct_out.append(
+                OCTVolumeWithMetaData(
+                    volume=array,
+                    patient_id=ds.PatientID,
+                    first_name=str(ds.PatientName).split("^")[1],
+                    surname=str(ds.PatientName).split("^")[0],
+                    sex=ds.PatientSex,
+                    acquisition_date=ds.StudyDate,
+                    laterality=ds.Laterality,
+                )
+            )
+        for image in self.all_fundus:
+            all_fundus_out.append(
+                FundusImageWithMetaData(
+                    image=image,
+                    patient_id=ds.PatientID,
+                    laterality=ds.Laterality,
+                )
+            )
+
+        # pass 2
+        if "PixelData" in ds:
+            if "NumberOfFrames" in ds:
+                if isinstance(ds.NumberOfFrames, str):
+                    nr_frames = ds.NumberOfFrames.split("\0")[0]
+                else:
+                    nr_frames = ds.NumberOfFrames
+
+                frames = generate_pixel_data_frame(ds.PixelData, int(nr_frames))
+                all_frames = []
+                for idx, scrambled_frame in enumerate(frames):
+                    # try decoding without unscrambling
+                    frame = cv2.imdecode(
+                        np.frombuffer(scrambled_frame, np.uint8), flags=1
+                    )
+                    # if that fails, unscramble and decode
+                    if frame is None:
+                        unscrambled_frame = self.unscramble_frame(scrambled_frame)
+                        frame = cv2.imdecode(
+                            np.frombuffer(unscrambled_frame, np.uint8), flags=1
+                        )
+                    all_frames.append(frame)
+                array = np.rot90(np.array(all_frames), axes=(1, 2), k=3)
+                all_oct_out.append(
+                    OCTVolumeWithMetaData(
+                        volume=array,
+                        patient_id=ds.PatientID,
+                        first_name=str(ds.PatientName).split("^")[1],
+                        surname=str(ds.PatientName).split("^")[0],
+                        sex=ds.PatientSex,
+                        acquisition_date=ds.StudyDate,
+                        laterality=ds.Laterality,
+                    )
+                )
+            else:
+                unscrambled_frame = self.unscramble_frame(ds.PixelData)
+                frame = cv2.imdecode(
+                    np.frombuffer(unscrambled_frame, np.uint8), flags=1
+                )
+                all_fundus_out.append(
+                    FundusImageWithMetaData(
+                        image=frame,
+                        patient_id=ds.PatientID,
+                        laterality=ds.Laterality,
+                    )
+                )
+
+        return all_oct_out, all_fundus_out
+
     def read_data(self):
         """Read Zeiss OCT volumes and fundus images from one DICOM file."""
         ds = self.read_dataset()
@@ -486,8 +611,8 @@ class ZEISSDicom(object):
         fundus_outputs: list[FundusImageWithMetaData] = []
         seen_oct: set[tuple[tuple[int, ...], str, str]] = set()
         seen_fundus: set[tuple[tuple[int, ...], str, str]] = set()
-
-        self.decode_private_payloads(ds, oct_outputs, fundus_outputs, seen_oct, seen_fundus)
+        # print(ds)
+        # self.decode_private_payloads(ds, oct_outputs, fundus_outputs, seen_oct, seen_fundus)
         self.decode_pixel_data(ds, oct_outputs, fundus_outputs, seen_oct, seen_fundus)
 
         return oct_outputs, fundus_outputs
@@ -521,3 +646,27 @@ class ZEISSDicom(object):
 
         assert len(data) == len(frame)
         return data
+
+
+if __name__ == "__main__":
+    import os
+    from matplotlib import pyplot as plt
+
+    dir = r'E:\Data\OCT3\ZEISSOCT\FS006GIA_RD-0034-KH902-60601-RVO-JNYKYY-72-R-072009RVO-01-OCT\DataFiles\E826'
+
+    for file in os.listdir(dir):
+        if file.endswith('.DCM'):
+            file_path = os.path.join(dir, file)
+            print(file)
+            img = ZEISSDicom(file_path)
+            oct_volumes, fundus_volumes = img.read_data()
+            if len(oct_volumes) > 0:
+                print("OCT volumes:", oct_volumes[0].volume.shape)
+                show_volume_slider(oct_volumes[0].volume, axis=0)
+
+            print("OCT volumes:", len(oct_volumes))
+            print("Fundus volumes:", len(fundus_volumes))
+            for idx, image in enumerate(fundus_volumes):
+                plt.imshow(image.image)
+                plt.title(f"Fundus image {idx}")
+                plt.show()

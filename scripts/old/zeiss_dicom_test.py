@@ -1,166 +1,101 @@
 import os
-from typing import Any, Optional
+from typing import Any, List
 
 import pydicom
 
-from scripts.old.dir_process import remove_and_create_dir
-from scripts.old.zeiss_dicom import ZEISSDicom
+from utils import clean_text
 
 pydicom.config.settings.reading_validation_mode = pydicom.config.IGNORE
 pydicom.config.settings.writing_validation_mode = pydicom.config.IGNORE
 
-dir = r'E:\Data\OCT\蔡司OCT\DataFiles\E197'
-output_dir = r"E:\Data\OCT\Result\zeiss"
-remove_and_create_dir(output_dir)
-
-
-def clean_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if hasattr(value, "value"):
-        value = value.value
-    if isinstance(value, bytes):
-        value = value.decode("utf-8", errors="ignore")
-    text = str(value).split("\x00", 1)[0]
-    text = "".join(char for char in text if char.isprintable())
-    return text.strip()
-
-
-def safe_getattr(dataset: pydicom.dataset.FileDataset, name: str) -> str:
-    try:
-        return clean_text(getattr(dataset, name, ""))
-    except Exception:
-        return ""
+# input_dir = r'E:\Data\OCT\蔡司OCT\DataFiles\E195'
+input_dir = r'E:\Data\OCT3\ZEISSOCT\FS006GIA_RD-0034-KH902-60601-RVO-JNYKYY-72-R-072009RVO-01-OCT\DataFiles\E827'
 
 
 def describe_value(value: Any) -> str:
     if value is None:
         return "-"
-    if hasattr(value, "VM") and getattr(value, "VM", 1) > 1:
-        try:
-            parts = [clean_text(item) for item in value]
-            parts = [part for part in parts if part]
-            return "[" + ", ".join(parts) + "]" if parts else "-"
-        except Exception:
-            pass
-    text = clean_text(value)
-    return text or "-"
+    try:
+        if hasattr(value, "VM") and getattr(value, "VM", 1) > 1:
+            return "[" + ", ".join(clean_text(v) for v in value if v) + "]"
+    except Exception:
+        pass
+
+    return clean_text(value) or "-"
 
 
-def print_header_summary(ds: pydicom.dataset.FileDataset) -> None:
+def extract_code_meaning(ds) -> List[str]:
+    results = []
+    for elem in ds.iterall():
+        if elem.tag == (0x0008, 0x0104):
+            text = clean_text(elem.value)
+            if text:
+                results.append(text)
+    return results
+
+
+def safe_get(ds, name: str) -> str:
+    try:
+        return clean_text(getattr(ds, name, ""))
+    except Exception:
+        return ""
+
+
+def print_header_summary(ds) -> None:
     fields = [
-        ("SOPClassUID", safe_getattr(ds, "SOPClassUID")),
-        ("Modality", safe_getattr(ds, "Modality")),
-        ("TransferSyntaxUID", clean_text(getattr(getattr(ds, "file_meta", None), "TransferSyntaxUID", ""))),
-        ("Manufacturer", safe_getattr(ds, "Manufacturer")),
-        ("ManufacturerModelName", safe_getattr(ds, "ManufacturerModelName")),
-        ("ProtocolName", safe_getattr(ds, "ProtocolName")),
-        ("StudyDescription", safe_getattr(ds, "StudyDescription")),
-        ("SeriesDescription", safe_getattr(ds, "SeriesDescription")),
-        ("PatientID", safe_getattr(ds, "PatientID")),
-        ("PatientName", safe_getattr(ds, "PatientName")),
-        ("PatientSex", safe_getattr(ds, "PatientSex")),
-        ("PatientBirthDate", safe_getattr(ds, "PatientBirthDate")),
-        ("Laterality", safe_getattr(ds, "Laterality") or safe_getattr(ds, "ImageLaterality")),
-        ("StudyDate", safe_getattr(ds, "StudyDate")),
-        ("StudyTime", safe_getattr(ds, "StudyTime")),
-        ("AcquisitionDate", safe_getattr(ds, "AcquisitionDate")),
-        ("AcquisitionTime", safe_getattr(ds, "AcquisitionTime")),
+        ("SOPClassUID", safe_get(ds, "SOPClassUID")),
+        ("Modality", safe_get(ds, "Modality")),
+        ("Manufacturer", safe_get(ds, "Manufacturer")),
+        ("ManufacturerModelName", safe_get(ds, "ManufacturerModelName")),
+        ("ProtocolName", safe_get(ds, "ProtocolName")),
+        ("StudyDescription", safe_get(ds, "StudyDescription")),
+        ("SeriesDescription", safe_get(ds, "SeriesDescription")),
+        ("PatientID", safe_get(ds, "PatientID")),
+        ("PatientName", safe_get(ds, "PatientName")),
+        ("Laterality", safe_get(ds, "Laterality") or safe_get(ds, "ImageLaterality")),
+        ("StudyDate", safe_get(ds, "StudyDate")),
+        ("StudyTime", safe_get(ds, "StudyTime")),
+        ("AcquisitionDate", safe_get(ds, "AcquisitionDate")),
+        ("AcquisitionTime", safe_get(ds, "AcquisitionTime")),
         ("Rows", getattr(ds, "Rows", None)),
         ("Columns", getattr(ds, "Columns", None)),
         ("SamplesPerPixel", getattr(ds, "SamplesPerPixel", None)),
-        ("PhotometricInterpretation", safe_getattr(ds, "PhotometricInterpretation")),
-        ("NumberOfFrames", getattr(ds, "NumberOfFrames", None)),
         ("BitsAllocated", getattr(ds, "BitsAllocated", None)),
-        ("BitsStored", getattr(ds, "BitsStored", None)),
-        ("PixelRepresentation", getattr(ds, "PixelRepresentation", None)),
         ("PixelSpacing", getattr(ds, "PixelSpacing", None)),
-        ("FrameOfReferenceUID", safe_getattr(ds, "FrameOfReferenceUID")),
-        ("SeriesInstanceUID", safe_getattr(ds, "SeriesInstanceUID")),
+        ("PhotometricInterpretation", safe_get(ds, "PhotometricInterpretation")),
+        ("NumberOfFrames", getattr(ds, "NumberOfFrames", None)),
+        ("Zeiss_CodeMeaning", extract_code_meaning(ds) or "-"),
     ]
-    for label, value in fields:
-        print(f"{label}: {describe_value(value)}")
+
+    for k, v in fields:
+        print(f"{k}: {describe_value(v)}")
 
 
-def print_dataset_elements(ds: pydicom.dataset.FileDataset) -> None:
-    print("Top-level DICOM elements:")
-    for element in ds:
-        keyword = element.keyword or "-"
-        vr = element.VR
-        tag_text = f"({element.tag.group:04X},{element.tag.elem:04X})"
-        if keyword == "PixelData":
-            value_text = f"<{len(element.value)} bytes>"
-        elif vr == "SQ":
-            value_text = f"<Sequence with {len(element.value)} item(s)>"
-        else:
-            value_text = describe_value(element.value)
-            if len(value_text) > 160:
-                value_text = value_text[:157] + "..."
-        print(f"  {tag_text} {keyword} [{vr}] = {value_text}")
-
-
-def try_decode_pixel_array(ds: pydicom.dataset.FileDataset) -> Optional[Any]:
+def try_decode_pixel(ds):
     if "PixelData" not in ds:
         return None
     try:
         return ds.pixel_array
-    except Exception as exc:
-        print(f"pixel_array decode failed: {exc}")
+    except Exception as e:
+        print("pixel decode failed:", e)
         return None
 
 
-def save_decoded_payloads(file_path: str, file_stem: str) -> None:
-    try:
-        img = ZEISSDicom(file_path)
-        oct_volumes, fundus_volumes = img.read_data()
-    except Exception as exc:
-        print(f"ZEISSDicom.read_data failed: {exc}")
-        return
+for file in os.listdir(input_dir):
+    if not file.endswith(".DCM"):
+        continue
 
-    export_dir = os.path.join(output_dir, file_stem)
-    os.makedirs(export_dir, exist_ok=True)
-    print(f"ZEISSDicom parsed OCT volumes: {len(oct_volumes)}")
-    for idx, volume in enumerate(oct_volumes):
-        volume_dir = os.path.join(export_dir, f"oct_{idx}")
-        os.makedirs(volume_dir, exist_ok=True)
-        print(
-            f"  OCT[{idx}] shape={getattr(volume.volume, 'shape', None)} "
-            f"laterality={getattr(volume, 'laterality', None)}"
-        )
-        volume.save(os.path.join(volume_dir, "volume.tiff"))
+    file_path = os.path.join(input_dir, file)
+    print("\n" + "-" * 40)
+    print(file)
 
-    print(f"ZEISSDicom parsed fundus images: {len(fundus_volumes)}")
-    for idx, image in enumerate(fundus_volumes):
-        image_path = os.path.join(export_dir, f"fundus_{idx}.png")
-        print(
-            f"  Fundus[{idx}] shape={getattr(image.image, 'shape', None)} "
-            f"laterality={getattr(image, 'laterality', None)}"
-        )
-        image.save(image_path)
+    ds = pydicom.dcmread(file_path)
+    # print(ds)
 
+    # 🔍 Zeiss info
+    code_meaning = extract_code_meaning(ds)
 
-for file in os.listdir(dir):
-    if file.endswith('.DCM'):
-        file_path = os.path.join(dir, file)
-        print("-" * 40)
-        print(file)
-        ds = pydicom.dcmread(file_path)
-        print(ds)
-        has_pixel_data = "PixelData" in ds
-        print(f"HasPixelData: {has_pixel_data}")
-        rows = getattr(ds, "Rows", None)
-        columns = getattr(ds, "Columns", None)
-        print(f"Rows/Columns: {rows} x {columns}")
-        print_header_summary(ds)
-        # print_dataset_elements(ds)
+    print("CodeMeaning:", code_meaning if code_meaning else "None")
+    print(f"Rows/Columns: {getattr(ds, 'Rows', None)} x {getattr(ds, 'Columns', None)}")
 
-        # if has_pixel_data:
-        #     pixel_array = try_decode_pixel_array(ds)
-        #     if pixel_array is not None:
-        #         print(
-        #             "pixel_array: "
-        #             f"shape={getattr(pixel_array, 'shape', None)} "
-        #             f"dtype={getattr(pixel_array, 'dtype', None)} "
-        #             f"min={pixel_array.min() if hasattr(pixel_array, 'min') else '-'} "
-        #             f"max={pixel_array.max() if hasattr(pixel_array, 'max') else '-'}"
-        #         )
+    print_header_summary(ds)
